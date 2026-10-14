@@ -1,0 +1,244 @@
+name: VOID VIBE daily collect and drip publishing
+on:
+  schedule:
+    - cron: '17 7 * * *'   # 10:17 MSK: collect
+    - cron: '30 8 * * *'   # 11:30 MSK: publish
+    - cron: '30 12 * * *'  # 15:30 MSK: publish
+    - cron: '30 16 * * *'  # 19:30 MSK: publish
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Verify routing, import music, or recover a stale marker
+        required: true
+        default: verify
+        type: choice
+        options:
+          - verify
+          - import
+          - collect
+          - publish
+          - archive
+          - recover
+          - preflight
+          - reconcile
+          - finalize
+      chain_step:
+        description: Internal continuation counter; leave 0 for a new chain
+        required: false
+        default: '0'
+        type: string
+      confirm_recovery:
+        description: I checked the target topics and want to clear IN_PROGRESS
+        required: false
+        default: false
+        type: boolean
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: void-vibe-music-transfer
+  cancel-in-progress: false
+jobs:
+  transfer:
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    # Daily collection and publication; preserve emergency pause.
+    # ROUTER_PAUSED=true remains the emergency stop for all trigger types.
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
+      EVENT_NAME: ${{ github.event_name }}
+      RUN_MODE: ${{ inputs.mode || (github.event_name == 'push' && 'preflight') || (github.event_name == 'schedule' && github.event.schedule == '17 7 * * *' && 'collect') || (github.event_name == 'schedule' && 'publish') || 'verify' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+      - name: Read archive pause control
+        id: control
+        working-directory: app
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('ARCHIVE_CONTROL.json')
+          paused = json.loads(path.read_text()).get('paused', False) if path.exists() else False
+          auto_review = json.loads(path.read_text()).get('reconcile_after_preflight', False) if path.exists() else False
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'paused={str(paused).lower()}\n')
+              output.write(f'auto_review={str(auto_review).lower()}\n')
+          print('Archive pause control:', paused)
+          PY
+      - name: Load durable progress branch
+        working-directory: app
+        run: |
+          set -euo pipefail
+          git config user.name 'music-router'
+          git config user.email 'music-router@users.noreply.github.com'
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          if git show-ref --verify --quiet refs/remotes/origin/router-state; then
+            git worktree add ../progress -B router-state origin/router-state
+          else
+            git worktree add --detach ../progress
+            cd ../progress
+            git checkout --orphan router-state
+            git rm -rf .
+            mkdir -p data
+            echo '{}' > data/schedule.json
+            git add data/schedule.json
+            git commit -m 'Initialize music progress'
+            git push origin HEAD:router-state
+          fi
+      - name: Recover stale run marker
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'recover'
+        working-directory: progress
+        env:
+          CONFIRM_RECOVERY: ${{ inputs.confirm_recovery }}
+        run: |
+          set -euo pipefail
+          if test "$CONFIRM_RECOVERY" != "true"; then
+            echo 'Recovery requires confirm_recovery=true after checking the target topics.'
+            exit 1
+          fi
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          path = Path('data/router.sqlite3')
+          if path.exists():
+              with sqlite3.connect(path) as db:
+                  result = db.execute('PRAGMA integrity_check').fetchone()[0]
+                  if result != 'ok':
+                      raise SystemExit(f'SQLite integrity check failed: {result}')
+                  print('SQLite integrity: ok; per-track identifiers withheld from public logs')
+          PY
+          if test -f data/IN_PROGRESS; then
+            rm data/IN_PROGRESS
+            git add -A -- data/IN_PROGRESS
+            git commit -m 'Recover stale music transfer marker'
+            git push origin HEAD:router-state
+          else
+            echo 'No IN_PROGRESS marker exists.'
+          fi
+      - name: Check collection or publication window
+        if: (github.event_name != 'workflow_dispatch' || inputs.mode != 'recover') && (steps.control.outputs.paused != 'true' || env.RUN_MODE == 'preflight' || env.RUN_MODE == 'finalize')
+        id: gate
+        working-directory: app
+        run: python schedule_gate.py
+      - name: Stop after an incomplete prior run
+        if: steps.gate.outputs.due == 'true'
+        run: |
+          if { test -f progress/data/IN_PROGRESS && test "$RUN_MODE" != preflight && test "$RUN_MODE" != finalize; } || test -f progress/data/MAINTENANCE_IN_PROGRESS.json || test -f progress/data/PAIRING_IN_PROGRESS.json || test -f progress/data/AUDIO_RESTORE_IN_PROGRESS.json || test -f progress/data/CAPTION_CLEANUP_IN_PROGRESS.json; then
+            echo 'Previous run was interrupted. Review target messages, then use manual recover with confirmation.'
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.due == 'true'
+        with:
+          python-version: '3.12'
+      - name: Install and test
+        if: steps.gate.outputs.due == 'true'
+        working-directory: app
+        env:
+          ROUTER_STATE_DIR: ${{ runner.temp }}/void-vibe-tests
+        run: |
+          python -m pip install -r requirements.txt
+          python test_router.py
+          python test_schedule.py
+          python test_incremental_sync.py
+          python test_drip_queue.py
+          python test_dedupe.py
+          python test_topics.py
+          python test_release_card.py
+          python test_archive.py
+          python test_auto_topics.py
+          python test_maintenance.py
+          python test_import_retention.py
+          python test_genre_rules.py
+          python test_archive_safety.py
+          python test_genre_review.py
+      - name: Check Telegram recovery switch
+        working-directory: app
+        run: python telegram_guard.py
+      - name: Require Telegram secrets
+        if: steps.gate.outputs.due == 'true'
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: |
+          python - <<'PY'
+          import os
+          missing = [key for key in ('TG_API_ID', 'TG_API_HASH', 'TG_SESSION') if not os.environ.get(key)]
+          if missing:
+              raise SystemExit('Add GitHub Actions secrets: ' + ', '.join(missing))
+          PY
+      - name: Persist run marker before any sends
+        if: steps.gate.outputs.due == 'true' && (env.RUN_MODE == 'publish' || env.RUN_MODE == 'archive' || env.RUN_MODE == 'reconcile')
+        working-directory: progress
+        run: |
+          touch data/IN_PROGRESS
+          git add data/IN_PROGRESS
+          git commit -m 'Begin bounded transfer'
+          git push origin HEAD:router-state
+      - name: Check Telegram recovery switch
+        working-directory: app
+        run: python telegram_guard.py
+      - name: Transfer bounded batch
+        if: steps.gate.outputs.due == 'true'
+        id: transfer
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          TG_QUEUE_ALERT_CHAT_ID: ${{ secrets.TG_QUEUE_ALERT_CHAT_ID }}
+          MAX_SENDS_PER_SOURCE: '60'
+          ARCHIVE_RETENTION_CHECKS: 'true'
+          IMPORT_RECEIPTS: 'true'
+          PUBLISH_SPACING_SECONDS: '120'
+        run: python cloud_run.py
+      - name: Persist progress even after errors
+        if: always() && steps.transfer.outcome != 'skipped' && steps.transfer.outcome != ''
+        working-directory: progress
+        env:
+          TRANSFER_RESULT: ${{ steps.transfer.outcome }}
+        run: |
+          set -euo pipefail
+          if test "$TRANSFER_RESULT" = success; then
+            rm -f data/IN_PROGRESS
+          fi
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          path = Path('data/router.sqlite3')
+          if path.exists():
+              with sqlite3.connect(path) as db:
+                  db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+          PY
+          git add data/schedule.json
+          if test -f data/IN_PROGRESS || git ls-files --error-unmatch data/IN_PROGRESS >/dev/null 2>&1; then
+            git add -A -- data/IN_PROGRESS
+          fi
+          if test -f data/router.sqlite3; then git add data/router.sqlite3; fi
+          if test -f data/run_summary.json; then git add data/run_summary.json; fi
+          for file in import_receipts.json archive_manifest.json archive_preflight.json archive_final.json genre_relocations.json genre_review.json paired_tracks.json audio_restore_plan.json archive_source_snapshot.json; do
+            if test -f "data/$file"; then git add "data/$file"; fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m 'Save transfer progress'
+            git push origin HEAD:router-state
+          fi
+      - name: Continue archive after saved progress
+        if: success() && steps.transfer.outcome == 'success' && (env.RUN_MODE == 'archive' || env.RUN_MODE == 'reconcile' || (env.RUN_MODE == 'preflight' && github.event_name == 'push' && steps.control.outputs.auto_review == 'true'))
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN_STEP: ${{ inputs.chain_step || '0' }}
+          ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
+        run: python continue_archive.py
+
