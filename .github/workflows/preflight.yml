@@ -59,6 +59,11 @@ jobs:
           python test_incremental_sync.py
           python test_drip_queue.py
           python test_daily_track.py
-          python -m unittest -v test_dj_hour_draft test_dj_phrase_mix test_dj_release test_dj_hour_approve
+          # Isolate test_dj_hour_draft: it inserts stub modules into sys.modules.
+          # A combined unittest process would taint subsequent Telegram publisher tests.
+          python -m unittest -v test_dj_hour_draft
+          python -m unittest -v test_dj_phrase_mix
+          python -m unittest -v test_dj_release
+          python -m unittest -v test_dj_hour_approve
       - name: Preflight complete
         run: echo "Preflight passed; PUBLIC_RUNNER_ENABLED is NOT changed. No scheduled task is activated."
