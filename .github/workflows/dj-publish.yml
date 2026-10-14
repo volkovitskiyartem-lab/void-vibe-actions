@@ -1,0 +1,146 @@
+name: VOID VIBE approved hour-set publisher
+on:
+  workflow_dispatch:
+    inputs:
+      producer_run_id:
+        description: Successful trusted builder run producing a verified hour-set artifact
+        required: true
+        type: string
+      publish:
+        description: Publish to Telegram after all checks (default preview only)
+        default: false
+        type: boolean
+  schedule:
+    # Sundays, 19:00 Moscow (fixed UTC+3).
+    - cron: '0 16 * * 0'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: void-vibe-dj-approved-publisher
+  cancel-in-progress: false
+jobs:
+  publish:
+    concurrency:
+      group: void-vibe-dj-session
+      cancel-in-progress: false
+    if: >-
+      vars.PUBLIC_RUNNER_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      vars.ROUTER_PAUSED != 'true' && vars.DJ_SETS_PAUSED != 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'schedule' &&
+        vars.DJ_AUTOPUBLISH_ENABLED == 'true' &&
+        vars.DJ_RIGHTS_CONFIRMED == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: dj-state
+          path: progress
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare git journal identity
+        working-directory: progress
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Resolve weekly verified builder artifact
+        id: producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID_INPUT: ${{ inputs.producer_run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            RUN_ID="$(gh api "repos/$REPO/actions/runs?branch=main&status=success&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name == "VOID VIBE verified hour-set builder")] | sort_by(.created_at) | last | .id // empty')"
+            if [ -z "$RUN_ID" ]; then
+              echo "No successful verified hour-set builder run; skip Sunday release."
+              exit 0
+            fi
+          else
+            RUN_ID="$RUN_ID_INPUT"
+          fi
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid producer run id'; exit 1; }
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Validate trusted public approval workflow run
+        if: steps.producer.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.producer.outputs.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid producer run id'; exit 1; }
+          gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '{name, head_branch, conclusion, created_at, head_repository: .head_repository.full_name}' > producer-run.json
+          python - <<'PY'
+          import json, os
+          run = json.load(open('producer-run.json'))
+          from datetime import datetime, timezone
+          if run['name'] != 'VOID VIBE verified hour-set builder' or run['head_branch'] != 'main' or run['conclusion'] != 'success' or run['head_repository'] != os.environ['REPO']:
+              raise SystemExit('Refusing artifact from unsuccessful/untrusted/non-main source')
+          if os.environ.get('EVENT_NAME') == 'schedule':
+              built = datetime.fromisoformat(run['created_at'].replace('Z', '+00:00'))
+              age = (datetime.now(timezone.utc) - built).total_seconds()
+              if not 0 <= age <= 7 * 86400:
+                  raise SystemExit('Latest verified builder artifact is stale; refuse Sunday release')
+          PY
+      - name: Download approved audio solely from PRIVATE repository
+        if: steps.producer.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: volkovitskiyartem-lab/void-vibe-router
+          RUN_ID: ${{ steps.producer.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p approved-releases dj-release
+          gh release download "void-vibe-approved-${RUN_ID}" --repo "$PRIVATE_REPO" \
+            -D approved-releases -p "void-vibe-approved-${RUN_ID}.tar.gz"
+          python - <<'PY'
+          import os,tarfile
+          from pathlib import Path
+          archive=Path("approved-releases")/f"void-vibe-approved-{os.environ['RUN_ID']}.tar.gz"
+          with tarfile.open(archive,"r:gz") as t:
+              t.extractall("dj-release",filter="data")
+          assert Path("dj-release/manifest.json").is_file()
+          PY
+      - name: Validate release and format post without sending
+        if: steps.producer.outputs.ready == 'true'
+        working-directory: app
+        run: |
+          python -m unittest -v test_dj_release
+          python dj_release.py --input ../dj-release --mode preview
+      - name: Check Telegram recovery switch
+        working-directory: app
+        run: python telegram_guard.py
+      - name: Publish approved release when explicitly enabled
+        if: >-
+          steps.producer.outputs.ready == 'true' &&
+          vars.DJ_AUTOPUBLISH_ENABLED == 'true' &&
+          vars.DJ_RIGHTS_CONFIRMED == 'true' &&
+          (github.event_name == 'schedule' || inputs.publish == true)
+        working-directory: app
+        env:
+          DJ_STATE_BRANCH: dj-state
+          DJ_AUTOPUBLISH_ENABLED: ${{ vars.DJ_AUTOPUBLISH_ENABLED }}
+          DJ_RIGHTS_CONFIRMED: ${{ vars.DJ_RIGHTS_CONFIRMED }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_DJ_SESSION }}
+        run: python dj_release.py --input ../dj-release --state-root ../progress --mode publish
