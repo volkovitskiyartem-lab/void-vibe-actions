@@ -1,0 +1,92 @@
+name: VOID VIBE verified hour-set builder
+on:
+  workflow_dispatch:
+    inputs:
+      draft_run_id:
+        description: Run ID of successful private hour-set draft builder
+        required: true
+        type: string
+      listening_confirmation:
+        description: Type I_LISTENED_TO_THE_FULL_SET_AND_ALL_TRANSITIONS
+        required: true
+        type: string
+      musical_review_notes:
+        description: Describe checked transitions, first track and final resolution (20+ chars)
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: void-vibe-hour-approval
+  cancel-in-progress: false
+jobs:
+  approve:
+    if: vars.PUBLIC_RUNNER_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate trusted public draft-builder run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRAFT_RUN_ID: ${{ inputs.draft_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$DRAFT_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid draft run id'; exit 1; }
+          gh api "repos/$REPO/actions/runs/$DRAFT_RUN_ID" --jq '{name,head_branch,conclusion,head_repository: .head_repository.full_name}' > draft-run.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('draft-run.json'))
+          if r['name'] != 'VOID VIBE hour-set draft builder (read-only)' or r['head_branch'] != 'main' or r['conclusion'] != 'success' or r['head_repository'] != os.environ['REPO']:
+              raise SystemExit('Untrusted, unsuccessful or non-main source draft')
+          PY
+      - name: Download source draft exclusively from PRIVATE GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: volkovitskiyartem-lab/void-vibe-router
+          DRAFT_RUN_ID: ${{ inputs.draft_run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p draft-releases dj-hour-draft
+          gh release download "void-vibe-draft-${DRAFT_RUN_ID}" --repo "$PRIVATE_REPO" \
+            -D draft-releases -p "void-vibe-draft-${DRAFT_RUN_ID}.tar.gz"
+          python - <<'PY'
+          import os,tarfile
+          from pathlib import Path
+          bundle=Path("draft-releases")/f"void-vibe-draft-{os.environ['DRAFT_RUN_ID']}.tar.gz"
+          with tarfile.open(bundle,"r:gz") as t:
+              t.extractall("dj-hour-draft",filter="data")
+          assert Path("dj-hour-draft/draft_manifest.json").is_file()
+          PY
+      - name: Validate audio and recorded human listening; produce approved artifact
+        env:
+          GITHUB_REVIEWER: ${{ github.actor }}
+          LISTENING_ATTESTATION: ${{ inputs.listening_confirmation }}
+          MUSICAL_REVIEW_NOTES: ${{ inputs.musical_review_notes }}
+        run: |
+          python dj_hour_approve.py --draft dj-hour-draft --output dj-hour-approved \
+            --reviewer "$GITHUB_REVIEWER" --attestation "$LISTENING_ATTESTATION" --notes "$MUSICAL_REVIEW_NOTES"
+          python dj_release.py --input dj-hour-approved --mode preview
+      - name: Store approved release privately, never as a public Actions artifact
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: volkovitskiyartem-lab/void-vibe-router
+        run: |
+          set -euo pipefail
+          test -f dj-hour-approved/manifest.json
+          archive="void-vibe-approved-${GITHUB_RUN_ID}.tar.gz"
+          tar -czf "$archive" -C dj-hour-approved .
+          gh release create "void-vibe-approved-${GITHUB_RUN_ID}" "$archive" \
+            --repo "$PRIVATE_REPO" --draft \
+            --title "PRIVATE verified VOID VIBE release from run ${GITHUB_RUN_ID}" \
+            --notes "Approved after explicit listening; publisher must still confirm distribution rights."
