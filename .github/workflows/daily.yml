@@ -1,0 +1,89 @@
+name: Daily track editorial
+on:
+  schedule:
+    - cron: '0 5 * * *'
+    - cron: '30 5 * * *'
+    - cron: '0,30 8 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Collect candidates, preview today's article, or publish it
+        type: choice
+        default: collect
+        options: [collect, preview, publish]
+permissions:
+  contents: read
+# Independent editorial pipeline with a dedicated TG_DAILY_SESSION.
+concurrency:
+  group: void-vibe-daily-track
+  cancel-in-progress: false
+jobs:
+  daily:
+    concurrency:
+      group: void-vibe-daily-session
+      cancel-in-progress: false
+    if: vars.PUBLIC_RUNNER_ENABLED == 'true' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.DAILY_TRACK_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DAILY_STATE_BRANCH: daily-state
+      ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
+      # Explicit publication commit is an alternative to workflow_dispatch.
+      # Normal code pushes still collect only; date/history guards prevent duplicate posts.
+      DAILY_MODE: ${{ inputs.mode || (github.event_name == 'push' && startsWith(github.event.head_commit.message, '[daily-publish] ') && 'publish') || (github.event.schedule == '0,30 8 * * *' && 'publish') || 'collect' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+      - name: Load durable state
+        working-directory: app
+        run: |
+          set -euo pipefail
+          git config user.name 'music-router'
+          git config user.email 'music-router@users.noreply.github.com'
+          git fetch origin '+refs/heads/daily-state:refs/remotes/origin/daily-state'
+          git worktree add ../progress -B daily-state origin/daily-state
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: daily-editorial
+          path: editorial
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and test editorial pipeline
+        working-directory: app
+        run: |
+          python -m pip install -r requirements.txt
+          python test_daily_track.py
+      - name: Check Telegram recovery switch
+        working-directory: app
+        run: python telegram_guard.py
+      - name: Collect or publish
+        id: daily
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_DAILY_SESSION }}
+        run: python daily_track.py "$DAILY_MODE"
+      - name: Persist only daily editorial state, including failed-send receipts
+        if: always() && steps.daily.outcome != '' && steps.daily.outcome != 'skipped'
+        working-directory: progress
+        run: |
+          set -euo pipefail
+          for path in data/daily_pool.json data/daily_candidates.json data/daily_history.json data/DAILY_IN_PROGRESS.json; do
+            if test -f "$path" || git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+              git add -A -- "$path"
+            fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m 'Save daily editorial progress'
+            git push origin HEAD:daily-state
+          fi
+
