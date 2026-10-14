@@ -1,0 +1,51 @@
+name: CI
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '5 2 * * *'
+permissions:
+  contents: read
+jobs:
+  test:
+    if: vars.PUBLIC_RUNNER_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt -r requirements-dj.txt
+      - run: python -m compileall -q .
+      - run: python test_router.py
+      - run: python test_schedule.py
+      - run: python test_incremental_sync.py
+      - run: python test_drip_queue.py
+      - run: python test_dedupe.py
+      - run: python test_topics.py
+      - run: python test_release_card.py
+      - run: python test_archive.py
+      - run: python test_auto_topics.py
+      - run: python test_daily_track.py
+      - run: python test_maintenance.py
+      - run: python test_restore_audio.py
+      - run: python test_pair_tracks.py
+      - run: python test_caption_cleanup.py
+      - run: python test_import_retention.py
+      - run: python test_genre_rules.py
+      - run: python test_archive_safety.py
+      - run: python test_genre_review.py
+
+
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - run: python -m unittest -v test_dj_set_builder_v2
+      - run: python -m unittest -v test_dj_genre_probe
+      - run: python -m unittest -v test_dj_release
+      - run: python -m unittest -v test_dj_hour_draft
+      - run: python -m unittest -v test_dj_phrase_mix
+      - run: python -m unittest -v test_dj_hour_approve
