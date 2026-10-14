@@ -1,9 +1,5 @@
 name: VOID VIBE hour-set draft builder (read-only)
 on:
-  # One-shot owner-initiated integration rehearsal. Remove this push hook after a run is queued.
-  push:
-    branches: [main]
-    paths: ['.github/workflows/dj-hour-draft.yml']
   workflow_dispatch:
     inputs:
       genre:
