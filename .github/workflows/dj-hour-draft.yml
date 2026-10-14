@@ -1,0 +1,70 @@
+name: VOID VIBE hour-set draft builder (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      genre:
+        description: Preview genre
+        required: true
+        type: choice
+        options: [rotate, melodic_techno, tech_house, dnb]
+        default: dnb
+  schedule:
+    # Friday 18:00 Moscow, leaves Saturday for manual listening/approval.
+    - cron: '0 15 * * 5'
+permissions:
+  contents: read
+concurrency:
+  group: void-vibe-hour-draft
+  cancel-in-progress: false
+jobs:
+  preview:
+    concurrency:
+      group: void-vibe-dj-session
+      cancel-in-progress: false
+    if: vars.PUBLIC_RUNNER_ENABLED == 'true' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.DJ_SETS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audio dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libsndfile1
+          python -m pip install -r requirements.txt -r requirements-dj.txt
+      - name: Test DJ hour draft gates
+        run: python -m unittest -v test_dj_hour_draft test_dj_phrase_mix
+      - name: Check Telegram recovery switch
+        run: python telegram_guard.py
+      - name: Download source tracks, select and render private draft
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          DRAFT_GENRE: ${{ inputs.genre || 'rotate' }}
+        run: |
+          python -u dj_hour_draft.py --genre "$DRAFT_GENRE" --pool 23 --scan-limit 220 --output dj-hour-draft
+      # Keep source tracks and draft audio exclusively in the PRIVATE repository.
+      # Public Actions logs/artifacts must not contain audio or Telegram credentials.
+      - name: Store private review draft as a draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: volkovitskiyartem-lab/void-vibe-router
+        run: |
+          set -euo pipefail
+          test -f dj-hour-draft/draft_manifest.json
+          test -n "$(find dj-hour-draft -maxdepth 1 -name '*.mp3' -print -quit)"
+          archive="void-vibe-draft-${GITHUB_RUN_ID}.tar.gz"
+          tar -czf "$archive" -C dj-hour-draft .
+          gh release create "void-vibe-draft-${GITHUB_RUN_ID}" "$archive" \
+            --repo "$PRIVATE_REPO" --draft \
+            --title "PRIVATE VOID VIBE draft from public run ${GITHUB_RUN_ID}" \
+            --notes "Audio and transition previews for manual listening. Not approved for publication."
+          echo "Private draft stored in the protected repository; public Actions has no audio artifacts."
