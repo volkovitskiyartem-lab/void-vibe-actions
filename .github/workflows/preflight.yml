@@ -1,0 +1,64 @@
+name: VOID VIBE public runner security preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check required secrets without printing their values
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          TG_DAILY_SESSION: ${{ secrets.TG_DAILY_SESSION }}
+          TG_DJ_SESSION: ${{ secrets.TG_DJ_SESSION }}
+        run: |
+          python - <<'PY'
+          import os
+          keys=('PRIVATE_REPO_TOKEN','TG_API_ID','TG_API_HASH','TG_SESSION','TG_DAILY_SESSION','TG_DJ_SESSION')
+          missing=[key for key in keys if not os.environ.get(key)]
+          if missing:
+              raise SystemExit("Missing configured GitHub Actions secrets: " + ", ".join(missing))
+          print("Six required secrets are set. No secret values were printed.")
+          PY
+      - name: Checkout current PRIVATE source with read/write repository-scoped token
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+          persist-credentials: false
+      - name: Confirm separate private durable state branches exist
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          for branch in router-state daily-state dj-state daily-editorial; do
+            test -n "$(gh api "repos/volkovitskiyartem-lab/void-vibe-router/git/ref/heads/$branch" --jq '.ref')" || exit 1
+            echo "Required private state/reference branch exists."
+          done
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audio validation dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg libsndfile1
+      - name: Read-only pipeline tests, no Telegram access or publication
+        working-directory: app
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dj.txt
+          python -m compileall -q .
+          python test_router.py
+          python test_schedule.py
+          python test_incremental_sync.py
+          python test_drip_queue.py
+          python test_daily_track.py
+          python -m unittest -v test_dj_hour_draft test_dj_phrase_mix test_dj_release test_dj_hour_approve
+      - name: Preflight complete
+        run: echo "Preflight passed; PUBLIC_RUNNER_ENABLED is NOT changed. No scheduled task is activated."
