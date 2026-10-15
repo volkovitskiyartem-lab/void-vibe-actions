@@ -1,14 +1,18 @@
-name: Fresh Electronic Music historical pilot
+name: Fresh Electronic Music accelerated historical archive
 on:
   push:
     branches: [main]
     paths: ['.github/workflows/fresh-bulk.yml']
+  # Independent watchdog: keep importing even if an Actions self-dispatch is delayed.
+  # Runs every 3 hours; the main chain progresses as soon as each batch is saved.
+  schedule:
+    - cron: '7 */3 * * *'
   workflow_dispatch:
     inputs:
       mode:
         type: choice
         required: true
-        default: plan
+        default: bulk
         options: [plan, pilot, bulk]
 permissions:
   contents: read
@@ -21,13 +25,13 @@ jobs:
     concurrency:
       group: music-router
       cancel-in-progress: false
-    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && vars.FRESH_BULK_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
       FRESH_INVENTORY_PATH: ${{ github.workspace }}/inventory/reports/fresh_electronic_music_items.json
-      FRESH_MODE: ${{ inputs.mode || 'plan' }}
+      FRESH_MODE: ${{ inputs.mode || 'bulk' }}
       IMPORT_RECEIPTS: 'true'
       ARCHIVE_RETENTION_CHECKS: 'true'
       MAX_SENDS_PER_SOURCE: '20'
@@ -63,7 +67,7 @@ jobs:
           ROUTER_STATE_DIR: ${{ runner.temp }}/fresh-bulk-tests
         run: |
           python -m pip install -r requirements.txt
-          python -m unittest -v test_fresh_bulk
+          python -m unittest -v test_fresh_bulk test_fresh_bulk_continue test_fresh_daily
       - name: Persist recovery marker before any sends
         if: env.FRESH_MODE != 'plan'
         working-directory: progress
@@ -113,6 +117,15 @@ jobs:
             git commit -m 'Save Fresh Music archive progress and verified receipts'
             git push origin HEAD:router-state
           fi
+      - name: Dispatch next bulk batch only after durable progress is committed
+        if: success() && env.FRESH_MODE == 'bulk' && steps.fresh.outcome == 'success'
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
+          MUSIC_TRANSFER_PAUSED: ${{ vars.MUSIC_TRANSFER_PAUSED }}
+          FRESH_BULK_PAUSED: ${{ vars.FRESH_BULK_PAUSED }}
+        run: python fresh_bulk_continue.py
       - name: Trigger bounded pilot after durable inventory plan
         if: success() && env.FRESH_MODE == 'plan'
         env:
