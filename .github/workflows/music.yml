@@ -47,7 +47,7 @@ jobs:
     # ROUTER_PAUSED=true remains the emergency stop for all trigger types.
     if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 90
     env:
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
       EVENT_NAME: ${{ github.event_name }}
