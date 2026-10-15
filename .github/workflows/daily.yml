@@ -1,5 +1,8 @@
 name: Daily track editorial
 on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/daily.yml]
   schedule:
     - cron: '0 5 * * *'
     - cron: '30 5 * * *'
