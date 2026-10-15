@@ -27,14 +27,20 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m unittest -v test_fresh_daily test_fresh_bulk test_incremental_sync test_drip_queue
+      - name: Checkout private durable state read-only
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: router-state
+          path: state-snapshot
+          persist-credentials: false
       - name: Inspect only classification outcomes from saved private state
         run: |
           set -euo pipefail
-          git fetch origin 'refs/heads/router-state:refs/remotes/origin/router-state'
-          git show origin/router-state:data/router.sqlite3 > /tmp/fresh-qa-state.sqlite3
           python - <<'PY'
           import sqlite3
-          with sqlite3.connect('/tmp/fresh-qa-state.sqlite3') as db:
+          with sqlite3.connect('state-snapshot/data/router.sqlite3') as db:
               print('Fresh queue status:')
               for row in db.execute('SELECT status,count(*) FROM fresh_bulk_queue GROUP BY status'):
                   print(row)
