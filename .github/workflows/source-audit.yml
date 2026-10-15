@@ -1,0 +1,67 @@
+name: VOID VIBE source coverage audit (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/source-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: void-vibe-source-coverage-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
+      ROUTER_AUDIT_OUTPUT: ${{ github.workspace }}/audit/reports/source_coverage.json
+    steps:
+      - name: Checkout private source code (no state mutations)
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+      - name: Open private router-state as a read-only worktree
+        working-directory: app
+        run: |
+          set -euo pipefail
+          git config user.name 'music-router'
+          git config user.email 'music-router@users.noreply.github.com'
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          git worktree add ../progress --detach origin/router-state
+          if git show-ref --verify --quiet refs/remotes/origin/coverage-reports; then
+            git worktree add ../audit -B coverage-reports origin/coverage-reports
+          else
+            git worktree add --detach ../audit
+            cd ../audit
+            git checkout --orphan coverage-reports
+            git rm -rf .
+            mkdir -p reports
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install read-only Telegram client dependencies
+        working-directory: app
+        run: python -m pip install -r requirements.txt
+      - name: Compare source audio to private durable receipts
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: python source_coverage_audit.py
+      - name: Persist audit report to dedicated private branch
+        working-directory: audit
+        run: |
+          set -euo pipefail
+          git add reports/source_coverage.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Save source coverage audit'
+            git push origin HEAD:coverage-reports
+          fi
+          echo 'Detailed report saved privately; no Telegram messages were sent.'
