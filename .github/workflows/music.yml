@@ -1,10 +1,14 @@
 name: VOID VIBE daily collect and drip publishing
 on:
+  # A change to this file can safely recover a missed scheduler event.
+  push:
+    branches: [main]
+    paths: ['.github/workflows/music.yml']
   schedule:
-    - cron: '17 7 * * *'   # 10:17 MSK: collect
-    - cron: '30 8 * * *'   # 11:30 MSK: publish
-    - cron: '30 12 * * *'  # 15:30 MSK: publish
-    - cron: '30 16 * * *'  # 19:30 MSK: publish
+    - cron: '17,37,53 7 * * *'  # 10:17/10:37/10:53 MSK: collect with safeguards
+    - cron: '30,47 8 * * *'    # 11:30/11:47 MSK: publish with fallback
+    - cron: '30,47 12 * * *'   # 15:30/15:47 MSK: publish with fallback
+    - cron: '30,47 16 * * *'   # 19:30/19:47 MSK: publish with fallback
   workflow_dispatch:
     inputs:
       mode:
@@ -51,7 +55,7 @@ jobs:
     env:
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
       EVENT_NAME: ${{ github.event_name }}
-      RUN_MODE: ${{ inputs.mode || (github.event_name == 'push' && 'preflight') || (github.event_name == 'schedule' && github.event.schedule == '17 7 * * *' && 'collect') || (github.event_name == 'schedule' && 'publish') || 'verify' }}
+      RUN_MODE: ${{ inputs.mode || (github.event_name == 'push' && 'collect') || (github.event_name == 'schedule' && github.event.schedule == '17,37,53 7 * * *' && 'collect') || (github.event_name == 'schedule' && 'publish') || 'verify' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -233,6 +237,11 @@ jobs:
             git commit -m 'Save transfer progress'
             git push origin HEAD:router-state
           fi
+      - name: Recover missed collection with an immediate bounded publish
+        if: success() && github.event_name == 'push' && env.RUN_MODE == 'collect' && steps.transfer.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run music.yml --repo volkovitskiyartem-lab/void-vibe-actions --ref main -f mode=publish
       - name: Continue archive after saved progress
         if: success() && steps.transfer.outcome == 'success' && (env.RUN_MODE == 'archive' || env.RUN_MODE == 'reconcile' || (env.RUN_MODE == 'preflight' && github.event_name == 'push' && steps.control.outputs.auto_review == 'true'))
         working-directory: app
