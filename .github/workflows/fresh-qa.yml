@@ -1,0 +1,29 @@
+name: Verify Fresh Music daily and bulk isolation
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fresh-qa.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test third-source daily cutover, archive isolation and quota
+        env:
+          ROUTER_STATE_DIR: ${{ runner.temp }}/fresh-test-state
+        run: |
+          python -m pip install -r requirements.txt
+          python -m unittest -v test_fresh_daily test_fresh_bulk test_incremental_sync test_drip_queue
