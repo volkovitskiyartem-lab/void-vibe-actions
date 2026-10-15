@@ -3,10 +3,12 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/fresh-bulk.yml']
-  # Independent watchdog: keep importing even if an Actions self-dispatch is delayed.
-  # Runs every 3 hours; the main chain progresses as soon as each batch is saved.
+  # Hourly watchdog restarts after missed self-dispatches or protected windows.
+  # All crons are UTC; 08:58, 12:58, 16:58 UTC = 11:58, 15:58, 19:58 MSK.
+  # Bounded chain still runs immediately after saved progress between windows.
   schedule:
-    - cron: '7 */3 * * *'
+    - cron: '7 * * * *'
+    - cron: '58 8,12,16 * * *'
   workflow_dispatch:
     inputs:
       mode:
