@@ -36,7 +36,7 @@ jobs:
       FRESH_MODE: ${{ inputs.mode || 'bulk' }}
       IMPORT_RECEIPTS: 'true'
       ARCHIVE_RETENTION_CHECKS: 'true'
-      MAX_SENDS_PER_SOURCE: '20'
+      MAX_SENDS_PER_SOURCE: '40'
     steps:
       - name: Checkout private music router
         uses: actions/checkout@v4
@@ -69,7 +69,7 @@ jobs:
           ROUTER_STATE_DIR: ${{ runner.temp }}/fresh-bulk-tests
         run: |
           python -m pip install -r requirements.txt
-          python -m unittest -v test_fresh_bulk test_fresh_bulk_continue test_fresh_daily
+          python -m unittest -v test_fresh_bulk test_fresh_bulk_context test_fresh_bulk_continue test_fresh_daily
       - name: Persist recovery marker before any sends
         if: env.FRESH_MODE != 'plan'
         working-directory: progress
