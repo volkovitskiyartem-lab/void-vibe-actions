@@ -4,9 +4,10 @@ on:
     branches: [main]
     paths: [.github/workflows/daily.yml]
   schedule:
-    - cron: '0 5 * * *'
-    - cron: '30 5 * * *'
-    - cron: '0,30 8 * * *'
+    - cron: '17,47 5 * * *'
+    # Prewarm at 10:17 Moscow, then wait locally until 11:00.
+    - cron: '17 7 * * *'
+    - cron: '7,27 8 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -27,13 +28,13 @@ jobs:
       cancel-in-progress: false
     if: vars.PUBLIC_RUNNER_ENABLED == 'true' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.DAILY_TRACK_PAUSED != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       DAILY_STATE_BRANCH: daily-state
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
       # Explicit publication commit is an alternative to workflow_dispatch.
       # Normal code pushes still collect only; date/history guards prevent duplicate posts.
-      DAILY_MODE: ${{ inputs.mode || (github.event_name == 'push' && startsWith(github.event.head_commit.message, '[daily-publish] ') && 'publish') || (github.event.schedule == '0,30 8 * * *' && 'publish') || 'collect' }}
+      DAILY_MODE: ${{ inputs.mode || (github.event_name == 'push' && (startsWith(github.event.head_commit.message, '[daily-publish] ') || startsWith(github.event.head_commit.message, '[daily-timed] ')) && 'publish') || ((github.event.schedule == '17 7 * * *' || github.event.schedule == '7,27 8 * * *') && 'publish') || 'collect' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,11 +65,46 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python test_daily_track.py
+      - name: Hold publication until 11 Moscow and check durable receipts
+        id: timing
+        if: env.DAILY_MODE == 'publish'
+        working-directory: app
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          zone = ZoneInfo("Europe/Moscow")
+          now = datetime.now(zone)
+          state = Path(os.environ["ROUTER_STATE_DIR"])
+          history = json.loads((state / "daily_history.json").read_text()) if (state / "daily_history.json").exists() else {"posts": []}
+          already_sent = any(p.get("date") == now.date().isoformat() and p.get("status") == "sent" for p in history["posts"])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"skip={'true' if already_sent else 'false'}\n")
+          if already_sent:
+              print("Today's publication already confirmed; skip without connecting to Telegram.")
+          else:
+              if (state / "DAILY_IN_PROGRESS.json").exists():
+                  raise SystemExit("Unfinished publication: reconcile receipts before retrying.")
+              article = json.loads(Path("../editorial/editorial/current.json").read_text())
+              if article.get("date") != now.date().isoformat():
+                  raise SystemExit("Today's researched article is not ready.")
+              target = now.replace(hour=11, minute=0, second=0, microsecond=0)
+              seconds = max(0, (target - now).total_seconds())
+              if seconds > 3600:
+                  raise SystemExit("Publication started too early; use the 10:15 Moscow trigger.")
+              print(f"Article ready; publication time {target.isoformat()}; waiting {seconds:.0f}s.", flush=True)
+              while (remaining := (target - datetime.now(zone)).total_seconds()) > 0:
+                  time.sleep(min(30, remaining))
+              print("Publication gate open.", flush=True)
+          PY
       - name: Check Telegram recovery switch
         working-directory: app
         run: python telegram_guard.py
       - name: Collect or publish
         id: daily
+        if: steps.timing.outputs.skip != 'true'
         working-directory: app
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
@@ -90,3 +126,4 @@ jobs:
             git push origin HEAD:daily-state
           fi
 
+# Daily timing control: prewarm plus independent watchdog, 2026-10-15.
