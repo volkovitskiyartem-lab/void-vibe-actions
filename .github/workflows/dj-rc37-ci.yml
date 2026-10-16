@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: d1a7ce94ebcb076d3e8329f65b93c0f4a8212145
+          ref: 8e843ef07fb7d0179dacaa4a192d0bbb5751803a
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: app
           persist-credentials: false
@@ -36,4 +36,5 @@ jobs:
           python -m compileall -q dj_rc37_full_guard.py dj_rc37_entry_guard.py dj_rc37_repro.py test_dj_rc37.py
           python -m unittest -v test_dj_rc37
           python dj_rc37_repro.py --selftest
+          python dj_rc37_postrender_audit.py
           echo 'RC37 synthetic tests completed; no Telegram was accessed.'
