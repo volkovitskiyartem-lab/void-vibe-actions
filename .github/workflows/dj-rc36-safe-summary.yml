@@ -1,0 +1,58 @@
+name: DJ Brain RC36 — private report aggregate (no audio)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/dj-rc36-safe-summary.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: void-vibe-rc36-readonly-summary
+  cancel-in-progress: false
+
+jobs:
+  review-safe-counts:
+    if: github.ref == 'refs/heads/main' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download EXISTING private RC36 draft report, no Telegram access
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo "Missing private-repo read access"; exit 1; }
+          mkdir -p input
+          gh release download "djbrain-rc36-private-38904713419" \
+            --repo volkovitskiyartem-lab/void-vibe-router \
+            --pattern "djbrain-rc36-private-38904713419.tar.gz" \
+            --dir input
+      - name: Print aggregate-only QC results (no titles, IDs or audio)
+        run: |
+          python - <<'PY'
+          import json, tarfile, pathlib
+          p=pathlib.Path("input/djbrain-rc36-private-38904713419.tar.gz")
+          with tarfile.open(p,"r:gz") as tf:
+              reports=[x for x in tf.getmembers() if x.name.lstrip("./")=="RC36_RESULTS.json"]
+              if len(reports)!=1: raise SystemExit("Private report missing or duplicated")
+              info=json.load(tf.extractfile(reports[0]))
+              mp3_in_archive=sum(x.name.lower().endswith(".mp3") and x.isfile() for x in tf.getmembers())
+          for name in ("attempted_pairs","distinct_pairs","pairs_with_technical_previews",
+                       "pairs_blocked_or_failed","total_real_mp3_previews"):
+              assert isinstance(info[name],int)
+          assert info["attempted_pairs"]==9
+          assert info["pairs_with_technical_previews"]+info["pairs_blocked_or_failed"]==9
+          print("RC36 aggregate-only technical results — no audio or music metadata exposed")
+          for k in ("attempted_pairs","distinct_pairs","duplicate_pairs",
+                    "pairs_with_technical_previews","pairs_blocked_or_failed",
+                    "total_real_mp3_previews"):
+              print(k+":",info[k])
+          print("MP3 files in PRIVATE archive:",mp3_in_archive)
+          for genre,stats in sorted(info["by_genre"].items()):
+              print(genre, "attempted",stats["attempted"],
+                    "accepted",stats["technical_pass_pairs"],
+                    "previews",stats["mp3_count"])
+          print("Musical quality remains unverified until listener feedback.")
+          PY
