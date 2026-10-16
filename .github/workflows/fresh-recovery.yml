@@ -1,0 +1,102 @@
+name: Recover failed Fresh Music 40-audio receipts (no Telegram sends)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fresh-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: void-vibe-fresh-recovery-38821581759
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && vars.FRESH_BULK_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
+    steps:
+      - name: Checkout private importer with no-send recovery script
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+      - name: Isolate durable state and require exact failed marker
+        working-directory: app
+        run: |
+          set -euo pipefail
+          git config user.name 'music-router'
+          git config user.email 'music-router@users.noreply.github.com'
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          git worktree add ../progress -B router-state origin/router-state
+          test -s ../progress/data/router.sqlite3
+          test -s ../progress/data/FRESH_BULK_IN_PROGRESS.json
+          test ! -e ../progress/data/IN_PROGRESS
+          test ! -e ../progress/data/MAINTENANCE_IN_PROGRESS.json
+          test ! -e ../progress/data/PAIRING_IN_PROGRESS.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          marker=json.loads(Path('../progress/data/FRESH_BULK_IN_PROGRESS.json').read_text())
+          assert marker == {'run_id':'38821581759', 'mode':'bulk'}, 'Recovery marker mismatch: do not touch state'
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies and pass fail-closed recovery tests
+        working-directory: app
+        env:
+          ROUTER_STATE_DIR: ${{ runner.temp }}/fresh-recovery-tests
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt
+          python -m unittest -v test_fresh_recovery test_fresh_bulk test_fresh_bulk_context test_fresh_bulk_continue test_fresh_daily
+      - name: Read-only Telegram audit and rebuild 40 local receipts
+        id: recover
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: python -u fresh_recovery_38821581759.py
+      - name: Persist verified receipts in private state before any resume
+        working-directory: progress
+        run: |
+          set -euo pipefail
+          test ! -e data/FRESH_BULK_IN_PROGRESS.json
+          python - <<'PY'
+          import sqlite3,json
+          from pathlib import Path
+          p=Path('data/router.sqlite3')
+          with sqlite3.connect(p) as db:
+              assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+              assert db.execute("SELECT COUNT(*) FROM fresh_bulk_queue WHERE status='sent'").fetchone()[0]>=1174
+              db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+          summary=json.loads(Path('data/fresh_bulk_summary.json').read_text())
+          assert summary['mode']=='reconciled' and summary['reconciled_sent']==40
+          assert summary['queue_counts']['sent']==1174
+          PY
+          git add -A -- data/router.sqlite3 data/fresh_bulk_summary.json data/import_receipts.json data/FRESH_BULK_IN_PROGRESS.json
+          git commit -m 'Reconcile 40 Telegram-verified Fresh archive sends; clear recovery marker'
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:router-state; then
+              echo "FRESH_RECOVERY_STATE_COMMITTED attempt=$attempt"
+              exit 0
+            fi
+            echo "GitHub rejected state push attempt $attempt; retrying same commit only"
+            sleep $((attempt * 15))
+          done
+          echo "Recovery push failed: marker remains durable; do not resume"
+          exit 1
+      - name: Resume historical importer only after recovery state is committed
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run fresh-bulk.yml --repo volkovitskiyartem-lab/void-vibe-actions --ref main -f mode=bulk
