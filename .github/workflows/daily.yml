@@ -129,3 +129,5 @@ jobs:
 # Daily timing control: prewarm plus independent watchdog, 2026-10-15.
 
 # Timing watchdog: 2026-10-16 Europe/Moscow
+
+# Verify duplicate-publication guard: 2026-10-16
