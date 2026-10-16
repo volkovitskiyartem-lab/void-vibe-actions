@@ -9,6 +9,14 @@ on:
   schedule:
     - cron: '7 * * * *'
     - cron: '58 8,12,16 * * *'
+  # Independent event fallback: GitHub scheduled cron can be delayed or skipped.
+  # Restart archive when our regular publication or editorial workflow finishes,
+  # waiting until the protected daily music window has closed.
+  workflow_run:
+    workflows:
+      - VOID VIBE daily collect and drip publishing
+      - Daily track editorial
+    types: [completed]
   workflow_dispatch:
     inputs:
       mode:
@@ -27,7 +35,7 @@ jobs:
     concurrency:
       group: music-router
       cancel-in-progress: false
-    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && vars.FRESH_BULK_PAUSED != 'true'
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')) && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && vars.FRESH_BULK_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
@@ -38,6 +46,23 @@ jobs:
       ARCHIVE_RETENTION_CHECKS: 'true'
       MAX_SENDS_PER_SOURCE: '40'
     steps:
+      - name: Wait for live publication to finish after a completed daily workflow
+        if: github.event_name == 'workflow_run'
+        run: |
+          python - <<'PY'
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now=datetime.now(ZoneInfo('Europe/Moscow'))
+          # Do not dispatch during the 11:30/47, 15:30/47 or
+          # 19:30/47 publication windows. Outside these windows, the
+          # importer's allow_now() remains the final gate.
+          if now.hour in (11,15,19) and now.minute < 55:
+              resume=now.replace(minute=56,second=0,microsecond=0)
+              delay=max(0,(resume-now).total_seconds())
+              print(f'Waiting {delay:.0f}s until {resume.isoformat()} before safe archive processing',flush=True)
+              time.sleep(delay)
+          PY
       - name: Checkout private music router
         uses: actions/checkout@v4
         with:
