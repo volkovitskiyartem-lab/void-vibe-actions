@@ -1,0 +1,37 @@
+name: Verify VOID VIBE Telegram user session
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/verify-telegram-session.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install Telethon==1.45.0
+      - name: Check authorization without sending messages
+        env:
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          SESSION: ${{ secrets.TG_SESSION }}
+        run: |
+          python - <<'PY'
+          import asyncio, os
+          from telethon import TelegramClient
+          from telethon.sessions import StringSession
+          async def check():
+              client = TelegramClient(StringSession(os.environ['SESSION']), int(os.environ['API_ID']), os.environ['API_HASH'])
+              await client.connect()
+              try:
+                  if not await client.is_user_authorized():
+                      raise RuntimeError('Telegram session not authorized')
+                  print('TELEGRAM_SESSION_AUTHORIZED')
+              finally:
+                  await client.disconnect()
+          asyncio.run(check())
+          PY
