@@ -32,6 +32,7 @@ jobs:
         working-directory: app
         run: |
           set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y ffmpeg
           python -m pip install -r requirements.txt -r requirements-dj.txt
           python -m compileall -q dj_rc37_full_guard.py dj_rc37_entry_guard.py dj_rc37_repro.py test_dj_rc37.py
           python -m unittest -v test_dj_rc37
