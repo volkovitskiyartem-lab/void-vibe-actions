@@ -1,3 +1,4 @@
+# Read existing private draft release only. No Telegram, no audio publication.
 name: DJ Brain RC36 — private report aggregate (no audio)
 on:
   push:
