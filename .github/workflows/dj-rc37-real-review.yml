@@ -1,0 +1,118 @@
+name: DJ Brain RC37 - pinned real-track review (PRIVATE outputs)
+
+# Manual only. No push or schedule trigger, no Telegram publishing.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_private_review:
+        description: "I approve one read-only RC37 test using the 9 fixed RC36 source pairs"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  rc37-real-audio-review:
+    if: >-
+      github.repository == 'volkovitskiyartem-lab/void-vibe-actions' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_private_review == true &&
+      vars.ROUTER_PAUSED != 'true' &&
+      vars.DJ_SETS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    concurrency:
+      group: void-vibe-dj-session
+      cancel-in-progress: false
+    steps:
+      - name: Checkout immutable experimental code from PRIVATE
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: 8e843ef07fb7d0179dacaa4a192d0bbb5751803a
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+
+      - name: Verify private access and dedicated DJ session without printing values
+        env:
+          DJ_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          TRANSFER_SESSION: ${{ secrets.TG_SESSION }}
+          DAILY_SESSION: ${{ secrets.TG_DAILY_SESSION }}
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          PRIVATE_ACCESS: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          keys = ('DJ_SESSION', 'TRANSFER_SESSION', 'DAILY_SESSION', 'API_ID', 'API_HASH', 'PRIVATE_ACCESS')
+          missing = [key for key in keys if not os.environ.get(key)]
+          if missing:
+              raise SystemExit('Missing configured secret names: ' + ', '.join(missing))
+          if os.environ['DJ_SESSION'] in (os.environ['TRANSFER_SESSION'], os.environ['DAILY_SESSION']):
+              raise SystemExit('DJ Telegram session must differ from music and daily sessions')
+          print('Private repository and distinct DJ session configured; values withheld')
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install audio dependencies and run all offline safety checks
+        working-directory: app
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libsndfile1
+          python -m pip install -r requirements.txt -r requirements-dj.txt
+          python -m unittest -v test_dj_rc37
+          python dj_rc37_repro.py --selftest
+          python dj_rc37_postrender_audit.py
+          python telegram_guard.py
+
+      - name: Process EXACT original RC36 nine pairs; no Telegram writes
+        id: analysis
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          RC35_DIAG_CLIPS: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p ../rc37-private-review
+          echo 'RC37 real-audio private review started; source metadata/audio stays out of public logs.'
+          python -u dj_rc37_repro.py \
+            --mode fixed --output ../rc37-private-review \
+            --seeds 36,37,38 --scan-limit 160 \
+            > ../rc37-private-execution.log 2>&1
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('../rc37-private-review/RC37_RESULTS.json').read_text())
+          if data['attempted_pairs'] != 9 or data['comparison_mode'] != 'fixed':
+              raise SystemExit('Fixed sample incomplete: private diagnostics retained')
+          print('RC37: all nine source-pair attempts recorded; private report ready')
+          PY
+
+      - name: Save reports, errors, and audio in PRIVATE draft release only
+        if: always() && steps.analysis.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p rc37-private-review
+          if test -f rc37-private-execution.log; then
+            mv rc37-private-execution.log rc37-private-review/RC37_EXECUTION.log
+          fi
+          name="djbrain-rc37-private-${GITHUB_RUN_ID}"
+          archive="${name}.tar.gz"
+          tar -czf "$archive" -C rc37-private-review .
+          gh release create "$name" "$archive" \
+            --repo volkovitskiyartem-lab/void-vibe-router \
+            --draft \
+            --title "PRIVATE RC37 nine-pair review ${GITHUB_RUN_ID}" \
+            --notes "Read-only RC37; nine original RC36 source pairs, 8/16-bar drafts. No Telegram publication, musical quality requires listening."
+          echo 'Private draft release saved. No audio uploaded to public Actions artifacts.'
