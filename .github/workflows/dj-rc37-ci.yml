@@ -1,0 +1,39 @@
+name: DJ Brain RC37 synthetic CI (no Telegram/audio)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/dj-rc37-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: void-vibe-rc37-synthetic
+  cancel-in-progress: false
+
+jobs:
+  offline-rhythm-regression:
+    if: github.ref == 'refs/heads/main' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout pinned PRIVATE source (no Telegram login)
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: c9a18b3c0e1fbf7bd47a2881a2c3733b09a486c4
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install only analysis dependencies and run offline unit tests
+        working-directory: app
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt -r requirements-dj.txt
+          python -m compileall -q dj_rc37_full_guard.py dj_rc37_entry_guard.py dj_rc37_repro.py test_dj_rc37.py
+          python -m unittest -v test_dj_rc37
+          python dj_rc37_repro.py --selftest
+          echo 'RC37 synthetic tests completed; no Telegram was accessed.'
