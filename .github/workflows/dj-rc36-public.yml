@@ -1,0 +1,144 @@
+name: DJ Brain RC36 — public runner, PRIVATE review
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/dj-rc36-public.yml']
+  workflow_dispatch:
+    inputs:
+      confirm_new_public_dj_session:
+        description: Confirm TG_DJ_SESSION was updated in THIS public repository
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: void-vibe-rc36-public
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Verify private repo token without exposing it
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          test -n "$PRIVATE_REPO_TOKEN" || { echo "::error::Missing PRIVATE_REPO_TOKEN in public repository"; exit 1; }
+      - name: Checkout PINNED private RC36 source
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: 70802c58a666339ffd064c11ebecbaa3b3d5e6e5
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-src
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate pinned source structure without Telegram
+        run: |
+          set -euo pipefail
+          for f in dj_rc36_repro.py dj_rc33_pair_lab.py dj_rc34_kick_guard.py dj_rc35_tempo.py telegram_guard.py; do
+            test -f "private-src/$f" || { echo "::error::Private DJ source missing: $f"; exit 1; }
+          done
+          python -m py_compile private-src/dj_rc36_repro.py private-src/dj_rc33_pair_lab.py private-src/dj_rc34_kick_guard.py private-src/dj_rc35_tempo.py
+          echo "RC36 private-source checkout verified; Telegram and music were not accessed."
+
+  real-random-pairs:
+    needs: preflight
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.confirm_new_public_dj_session == true &&
+      github.ref == 'refs/heads/main' &&
+      vars.ROUTER_PAUSED != 'true' &&
+      vars.DJ_SETS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    concurrency:
+      group: void-vibe-dj-session
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted private RC36 code
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: 70802c58a666339ffd064c11ebecbaa3b3d5e6e5
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+      - name: Require independent DJ session without logging key values
+        env:
+          DJ_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          TRANSFER_SESSION: ${{ secrets.TG_SESSION }}
+          DAILY_SESSION: ${{ secrets.TG_DAILY_SESSION }}
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          needed=("DJ_SESSION","TRANSFER_SESSION","DAILY_SESSION","API_ID","API_HASH","PRIVATE_REPO_TOKEN")
+          missing=[k for k in needed if not os.environ.get(k)]
+          if missing:
+              raise SystemExit("Missing public repository secrets: "+", ".join(missing))
+          if os.environ["DJ_SESSION"] in (os.environ["TRANSFER_SESSION"],os.environ["DAILY_SESSION"]):
+              raise SystemExit("DJ session must be independently authorized")
+          print("DJ session is configured separately from other Telegram tasks; secrets withheld.")
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies and test safety gates
+        working-directory: app
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libsndfile1
+          python -m pip install -r requirements.txt -r requirements-dj.txt
+          python dj_rc33_pair_lab.py --selftest
+          python dj_rc34_kick_guard.py
+          python dj_rc35_tempo.py
+          python dj_rc36_repro.py --selftest
+      - name: Check private Telegram emergency pause
+        working-directory: app
+        run: python telegram_guard.py
+      - name: Nine random real pairs; keep private data out of public logs
+        id: experiment
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          RC35_DIAG_CLIPS: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p ../rc36-private-review
+          echo "RC36 analysis started, full diagnostics kept private."
+          python -u dj_rc36_repro.py --output ../rc36-private-review --seeds 36,37,38 --scan-limit 160 > ../rc36-private-execution.log 2>&1
+          python - <<'PY'
+          import json
+          d=json.load(open("../rc36-private-review/RC36_RESULTS.json"))
+          if d["attempted_pairs"]!=9:
+              raise SystemExit("Incomplete nine-pair experiment; diagnostics remain private.")
+          print("All 9 pair attempts recorded; detailed report remains private.")
+          PY
+      - name: Archive MP3 and diagnostics ONLY in PRIVATE draft Release
+        if: always() && steps.experiment.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: volkovitskiyartem-lab/void-vibe-router
+        run: |
+          set -euo pipefail
+          mkdir -p rc36-private-review
+          if test -f rc36-private-execution.log; then
+            mv rc36-private-execution.log rc36-private-review/RC36_EXECUTION.log
+          fi
+          archive="djbrain-rc36-private-${GITHUB_RUN_ID}.tar.gz"
+          tar -czf "$archive" -C rc36-private-review .
+          gh release create "djbrain-rc36-private-${GITHUB_RUN_ID}" "$archive"             --repo "$PRIVATE_REPO" --draft             --title "PRIVATE DJ Brain RC36 review ${GITHUB_RUN_ID}"             --notes "RC36 nine random pairs. MP3 previews are unverified and require private listening. Never auto-publish."
+          echo "RC36 review saved in PRIVATE draft Release; no audio artifact in PUBLIC repository."
