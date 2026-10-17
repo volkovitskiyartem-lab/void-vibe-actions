@@ -1,0 +1,81 @@
+name: Recover interrupted Fresh 33-track batch after live audit
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/recover-fresh-39031378391.yml']
+permissions:
+  contents: read
+  actions: write
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.FRESH_BULK_PAUSED != 'true'
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
+    steps:
+      - name: Checkout private music router
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+      - name: Load latest durable music state under serialized lock
+        working-directory: app
+        run: |
+          set -euo pipefail
+          git config user.name 'music-router'
+          git config user.email 'music-router@users.noreply.github.com'
+          git fetch origin '+refs/heads/router-state:refs/remotes/origin/router-state'
+          git worktree add ../progress -B router-state origin/router-state
+          test -s ../progress/data/router.sqlite3
+          test -s ../progress/data/import_receipts.json
+          test -s ../progress/data/FRESH_BULK_IN_PROGRESS.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Telegram client
+        working-directory: app
+        run: python -m pip install -r requirements.txt
+      - name: Live verify and adopt the single unreceipted audio (never send)
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: python -u recover_fresh_cancel_39031378391.py
+      - name: Save exact same audited receipts and removed marker
+        working-directory: progress
+        run: |
+          set -euo pipefail
+          test ! -e data/FRESH_BULK_IN_PROGRESS.json
+          python - <<'PY'
+          import sqlite3
+          with sqlite3.connect('data/router.sqlite3') as db:
+              if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
+                  raise SystemExit('SQLite integrity failure after recovery')
+              db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+          PY
+          git add -A -- data/router.sqlite3 data/import_receipts.json data/fresh_bulk_summary.json data/FRESH_BULK_IN_PROGRESS.json
+          git diff --cached --quiet && { echo 'No audited recovery changes; refuse auto resume'; exit 1; }
+          git commit -m 'Reconcile 33 Telegram-sent Fresh tracks after timed-out run 39031378391'
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:router-state; then
+              echo 'FRESH_33_TIMEOUT_RECEIPTS_DURABLY_SAVED'
+              exit 0
+            fi
+            sleep $((attempt * 10))
+          done
+          echo 'Could not persist recovered state, archive restart blocked'
+          exit 1
+      - name: Resume bounded archive only after exact state commit
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run fresh-bulk.yml --repo volkovitskiyartem-lab/void-vibe-actions --ref main -f mode=bulk
+          echo 'FRESH_ARCHIVE_RECOVERY_DISPATCHED'
