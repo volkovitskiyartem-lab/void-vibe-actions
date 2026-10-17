@@ -57,3 +57,53 @@ jobs:
                     "previews",stats["mp3_count"])
           print("Musical quality remains unverified until listener feedback.")
           PY
+
+      - name: Download already-generated private RC37 archive read-only, without Telegram
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          gh release download "djbrain-rc37-private-38954223934" \
+            --repo volkovitskiyartem-lab/void-vibe-router \
+            --pattern "djbrain-rc37-private-38954223934.tar.gz" \
+            --dir input
+
+      - name: RC37 aggregate-only review, no titles or Telegram IDs
+        run: |
+          python - <<'PY'
+          import json, pathlib, tarfile
+          path=pathlib.Path("input/djbrain-rc37-private-38954223934.tar.gz")
+          with tarfile.open(path, "r:gz") as archive:
+              matches=[x for x in archive.getmembers() if x.name.lstrip("./")=="RC37_RESULTS.json"]
+              if len(matches)!=1: raise SystemExit("Missing/duplicate RC37 report")
+              report=json.load(archive.extractfile(matches[0]))
+              actual_mp3=sum(x.isfile() and x.name.endswith(".mp3") for x in archive.getmembers())
+          assert report.get("version")=="RC37"
+          assert report["attempted_pairs"]==9
+          assert report["comparison_mode"]=="fixed"
+          assert len(report["pair_attempts"])==9
+          assert report["pairs_with_technical_previews"]+report["pairs_blocked_or_failed"]==9
+          assert report["total_real_mp3_previews"]==actual_mp3
+          assert all(x.get("manual_listening_required") is True
+              for row in report["pair_attempts"] for x in row["technical_previews"])
+          print("RC37 aggregate-only review; private audio, titles and IDs not exposed.")
+          for field in ("attempted_pairs","distinct_pairs","pairs_with_technical_previews",
+                        "pairs_blocked_or_failed","total_real_mp3_previews",
+                        "different_song_pairs_attempted","different_song_pairs_with_previews",
+                        "same_song_versions_with_previews"):
+              print(field,":",report.get(field))
+          print("mp3_in_private_archive:",actual_mp3)
+          for genre, row in sorted(report["by_genre"].items()):
+              print("genre:",genre,"attempted:",row["attempted"],
+                    "accepted_pairs:",row["technical_pass_pairs"],
+                    "previews:",row["mp3_count"])
+          for pair in report["pair_attempts"]:
+              previews=pair["technical_previews"]
+              bars=sorted(x["bars"] for x in previews)
+              statuses=[x.get("postrender_phase_audit",{}).get("status","unreported") for x in previews]
+              print("seed:",pair["seed"],"genre:",pair["genre"],"QC_previews_bars:",bars,
+                    "postrender_confidence_statuses:",statuses,
+                    "attempt_status:",pair["status"])
+          print("All RC37 previews remain unverified by listener.")
+          PY
