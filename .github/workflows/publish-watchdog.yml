@@ -1,0 +1,28 @@
+name: VOID VIBE fresh music publishing fallback
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-watchdog.yml']
+  # Independent fallback for delayed or dropped music.yml scheduled events.
+  schedule:
+    - cron: '38 8,12,16 * * *'
+  workflow_run:
+    workflows:
+      - Daily track editorial
+    types: [completed]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  dispatch-publication:
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')) && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch the real bounded daily publisher (not collection)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run music.yml --repo volkovitskiyartem-lab/void-vibe-actions --ref main -f mode=publish
+          echo 'VOID_VIBE_PUBLISH_QUEUED'
