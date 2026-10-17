@@ -107,3 +107,55 @@ jobs:
                     "attempt_status:",pair["status"])
           print("All RC37 previews remain unverified by listener.")
           PY
+
+      - name: RC37 rejection categories and guard measurements, no source identifiers
+        run: |
+          python - <<'PY'
+          import json, tarfile, pathlib, collections
+          p=pathlib.Path("input/djbrain-rc37-private-38954223934.tar.gz")
+          with tarfile.open(p,"r:gz") as tar:
+              raw=tar.extractfile(next(x for x in tar.getmembers() if x.name.lstrip("./")=="RC37_RESULTS.json"))
+              report=json.load(raw)
+          def category(message):
+              m=message.lower()
+              if "entry_beat_qc_failed:" in m:
+                  if "uncertain_single_beat_attack" in m: return "entry_uncertain_single_attack"
+                  if "missing_entry_kick_energy" in m: return "entry_weak_kick"
+                  if "entry_beats_misaligned" in m: return "entry_kick_misaligned"
+                  return "entry_guard_uncertain"
+              if "full overlap rhythm" in m:
+                  if "kick_phase_mismatch" in m: return "five_window_phase_mismatch"
+                  if "kick_phase_changes_during_overlap" in m: return "five_window_signed_drift"
+                  if "uncertain_kick_onset" in m: return "five_window_uncertain"
+                  return "full_overlap_other"
+              if "kick attack alignment" in m:
+                  return "legacy_kick_guard_rejection"
+              if "attack phase changes" in m: return "attack_phase_drift"
+              if "weak low-frequency" in m: return "weak_lowband_attack"
+              if "unstable tempo" in m: return "unstable_tempo"
+              if "source stretching" in m: return "tempo_stretch_over_limit"
+              if "not enough audio" in m or "too little audio" in m: return "insufficient_audio"
+              if "no pulse candidate" in m: return "no_pulse_candidate"
+              if "outside genre" in m: return "genre_tempo_mismatch"
+              if "pinned message" in m or "pinned source" in m: return "pinned_source_unavailable"
+              if not m.strip(): return "empty"
+              return "other_error"
+          print("SAFE RC37 rejection causes (no source names, IDs or details)")
+          tally=collections.Counter()
+          for row in report["pair_attempts"]:
+              categories=[category(x) for x in (row.get("blocked") or [])]
+              categories += [category(x) for x in (row.get("analysis_errors") or [])]
+              if row.get("error"): categories.append(category(row["error"]))
+              for k in categories: tally[k]+=1
+              qc=[]
+              for clip in row["technical_previews"]:
+                  full=clip.get("full_overlap_qc",{})
+                  entry=full.get("entry_beat_qc",{})
+                  qc.append({"bars":clip["bars"],
+                             "full_max_ms":full.get("max_window_offset_ms"),
+                             "signed_drift_ms":full.get("max_signed_drift_ms"),
+                             "first4_max_ms":entry.get("max_entry_offset_ms")})
+              print("seed",row["seed"],"genre",row["genre"],
+                    "blocked_causes",categories,"accepted_QC",qc)
+          print("failure_categories_total",dict(tally))
+          PY
