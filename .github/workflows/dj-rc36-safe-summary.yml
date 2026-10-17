@@ -159,3 +159,37 @@ jobs:
                     "blocked_causes",categories,"accepted_QC",qc)
           print("failure_categories_total",dict(tally))
           PY
+
+      - name: Publish two RC37 review previews to same PRIVATE draft release
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          p=Path("input/djbrain-rc37-private-38954223934.tar.gz")
+          expected={
+            "seed_36/RC33_melodic_techno_16bars_UNVERIFIED.mp3":"RC37_seed36_melodic_16bars_UNVERIFIED.mp3",
+            "seed_37/RC33_melodic_techno_8bars_UNVERIFIED.mp3":"RC37_seed37_melodic_8bars_UNVERIFIED.mp3",
+          }
+          output=Path("private-preview");output.mkdir(exist_ok=True)
+          with tarfile.open(p,"r:gz") as archive:
+              selected={}
+              for m in archive.getmembers():
+                  name=m.name.lstrip("./")
+                  if name in expected:
+                      if name in selected: raise SystemExit("Duplicate preview")
+                      if not m.isfile() or m.size<10_000 or m.size>30_000_000:
+                          raise SystemExit("Invalid MP3 preview")
+                      selected[name]=m
+              if set(selected)!=set(expected):
+                  raise SystemExit("Expected exactly two RC37 technical previews")
+              for name,asset in expected.items():
+                  with archive.extractfile(selected[name]) as src:
+                      (output/asset).write_bytes(src.read())
+          print("Two RC37 MP3 previews extracted for PRIVATE draft release.")
+          PY
+          gh release upload "djbrain-rc37-private-38954223934" private-preview/*.mp3 \
+            --repo volkovitskiyartem-lab/void-vibe-router --clobber >/dev/null
+          echo "Two MP3s added to PRIVATE draft release; no PUBLIC artifact was created."
