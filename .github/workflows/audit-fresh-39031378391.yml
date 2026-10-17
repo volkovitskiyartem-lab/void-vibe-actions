@@ -1,0 +1,45 @@
+name: Verify cancelled Fresh music batch 32 receipts
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/audit-fresh-39031378391.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
+    steps:
+      - name: Checkout private router
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+      - name: Read durable state without changing it
+        working-directory: app
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/router-state:refs/remotes/origin/router-state'
+          git worktree add --detach ../progress origin/router-state
+          test -s ../progress/data/router.sqlite3
+          test -s ../progress/data/import_receipts.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install fixed Telegram client
+        working-directory: app
+        run: python -m pip install -r requirements.txt
+      - name: Audit all live Telegram sends and shutdown window
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: python -u audit_fresh_cancel_39031378391.py
