@@ -1,0 +1,43 @@
+name: DJ Brain RC38 adaptive mixing offline CI
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/dj-rc38-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: void-vibe-dj-rc38-offline
+  cancel-in-progress: false
+
+jobs:
+  fixed-pair-adaptive-unit-tests:
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout pinned private RC38 code (no Telegram)
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: e4f73a064af6e66cea680dbb2cadbc1c234f8e45
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test adaptive transitions on synthetic audio and source manifest
+        working-directory: app
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libsndfile1
+          python -m pip install -r requirements.txt -r requirements-dj.txt
+          python -m compileall -q dj_rc38_adaptive.py dj_rc38_experiment.py test_dj_rc38.py dj_rc33_pair_lab.py
+          python -m unittest -v test_dj_rc38
+          python dj_rc38_adaptive.py
+          python dj_rc38_experiment.py --selftest
+          echo 'RC38 source pairs were not filtered; synthetic audio tests completed. No Telegram access or real music.'
