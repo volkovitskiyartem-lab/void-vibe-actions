@@ -3,11 +3,12 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/fresh-bulk.yml']
-  # Hourly watchdog restarts after missed self-dispatches or protected windows.
-  # All crons are UTC; 08:58, 12:58, 16:58 UTC = 11:58, 15:58, 19:58 MSK.
-  # Bounded chain still runs immediately after saved progress between windows.
+  # Independent 20-minute watchdog: GitHub may delay/drop individual scheduled events.
+  # Restart from the last durable checkpoint after missed self-dispatches or protected windows.
+  # Keep extra immediate post-window UTC checks at 08:58, 12:58, 16:58.
+  # Serialized music-router job and persisted recovery marker prevent concurrent duplicate sends.
   schedule:
-    - cron: '7 * * * *'
+    - cron: '7,27,47 * * * *'
     - cron: '58 8,12,16 * * *'
   # Independent event fallback: GitHub scheduled cron can be delayed or skipped.
   # Restart archive when our regular publication or editorial workflow finishes,
