@@ -3,7 +3,7 @@
   "experiments": {
     "rc38-fixed": {
       "repository": "volkovitskiyartem-lab/void-vibe-router",
-      "commit_sha": "db8e0d12cb3a404be8027d60970d1bc2e48ee59a",
+      "commit_sha": "3b1eaff46110f795a26902fe08192463839cbca5",
       "mode": "fixed",
       "seeds": [
         36,
