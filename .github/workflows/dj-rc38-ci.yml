@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: e2ba20f7f9c6a2849b95bd5edbcb0017cd71513b
+          ref: 8620e6cf93e203a6115961d82623fc0753809277
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: app
           persist-credentials: false
