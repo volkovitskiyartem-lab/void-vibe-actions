@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: e19bcd2d199efcb96f1c93b8bf558ae6455a232e
+          ref: 546e6bbfe3646b842fefa2b7214daaacd86f0bff
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: app
           persist-credentials: false
@@ -36,8 +36,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg libsndfile1
           python -m pip install -r requirements.txt -r requirements-dj.txt
-          python -m compileall -q dj_rc38_adaptive.py dj_rc38_experiment.py test_dj_rc38.py dj_rc33_pair_lab.py
+          python -m compileall -q dj_rc38_adaptive.py dj_rc38_experiment.py dj_rc38_learning.py test_dj_rc38.py dj_rc33_pair_lab.py
           python -m unittest -v test_dj_rc38
           python dj_rc38_adaptive.py
+          python dj_rc38_learning.py
           python dj_rc38_experiment.py --selftest
           echo 'RC38 source pairs were not filtered; synthetic audio tests completed. No Telegram access or real music.'
