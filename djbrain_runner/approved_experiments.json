@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "experiments": {
+    "rc38-fixed": {
+      "repository": "volkovitskiyartem-lab/void-vibe-router",
+      "commit_sha": "db8e0d12cb3a404be8027d60970d1bc2e48ee59a",
+      "mode": "fixed",
+      "seeds": [
+        36,
+        37,
+        38
+      ],
+      "entrypoint": "djbrain_runner.execute"
+    }
+  }
+}
