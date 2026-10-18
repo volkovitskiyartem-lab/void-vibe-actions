@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: b5e0ad16d88afdf0ae228d291bbf4d9b39ff876b
+          ref: 7116c31ab776d6818a0c1ca2590faa60203bb2b6
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: app
           persist-credentials: false
@@ -37,7 +37,8 @@ jobs:
           sudo apt-get install -y ffmpeg libsndfile1
           python -m pip install -r requirements.txt -r requirements-dj.txt
           python -m compileall -q dj_rc38_adaptive.py dj_rc38_experiment.py dj_rc38_learning.py test_dj_rc38.py dj_rc33_pair_lab.py
-          python -m unittest -v test_djbrain_runner_ledger test_dj_rc38
+          python -m unittest -v test_djbrain_runner_ledger test_djbrain_runner_execute test_dj_rc38
+          python -m djbrain_runner.execute --selftest
           python dj_rc38_adaptive.py
           python dj_rc38_learning.py
           python dj_rc38_experiment.py --selftest
