@@ -1,0 +1,194 @@
+name: DJ Brain — one trusted private experiment runner
+
+# One permanent manual launcher, NO public audio and NO Telegram writes.
+on:
+  workflow_dispatch:
+    inputs:
+      experiment_id:
+        description: 'Approved experiment identifier from reviewed allowlist'
+        type: string
+        required: true
+        default: 'rc38-fixed'
+      confirm_private_review:
+        description: 'I authorize one read-only private DJ experiment with original Telegram music'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  private-experiment:
+    if: >-
+      github.repository == 'volkovitskiyartem-lab/void-vibe-actions' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_private_review == true &&
+      vars.ROUTER_PAUSED != 'true' &&
+      vars.DJ_SETS_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    concurrency:
+      group: void-vibe-dj-session
+      cancel-in-progress: false
+    steps:
+      - name: Checkout public trusted dispatcher only
+        uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve experiment ID to reviewed private SHA, never arbitrary ref or code
+        id: resolve
+        working-directory: control
+        env:
+          EXPERIMENT_ID: ${{ inputs.experiment_id }}
+        run: |
+          set -euo pipefail
+          python -m djbrain_runner.resolve \
+            --experiment-id "$EXPERIMENT_ID" \
+            --registry djbrain_runner/approved_experiments.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Checkout immutable PRIVATE experimental code
+        id: private_checkout
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: ${{ steps.resolve.outputs.private_sha }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+
+      - name: Verify dedicated DJ session is configured; never print secrets
+        env:
+          DJ_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          TRANSFER_SESSION: ${{ secrets.TG_SESSION }}
+          DAILY_SESSION: ${{ secrets.TG_DAILY_SESSION }}
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          python - <<'PY'
+          import os
+          required=('DJ_SESSION','TRANSFER_SESSION','DAILY_SESSION','API_ID','API_HASH')
+          missing=[k for k in required if not os.environ.get(k)]
+          if missing: raise SystemExit('Missing configured names: '+','.join(missing))
+          if os.environ['DJ_SESSION'] in (os.environ['TRANSFER_SESSION'],os.environ['DAILY_SESSION']):
+              raise SystemExit('DJ session must remain distinct')
+          print('Dedicated DJ credentials configured; values withheld')
+          PY
+
+      - name: Offline safeguards before any Telegram login
+        id: prepare
+        working-directory: app
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libsndfile1
+          python -m pip install -r requirements.txt -r requirements-dj.txt
+          python -m unittest -v test_djbrain_runner_ledger test_djbrain_runner_execute test_djbrain_runner_package test_dj_rc38
+          python -m djbrain_runner.execute --selftest
+          python telegram_guard.py
+
+      - name: Attempt all pinned real source pairs with no Telegram writes
+        id: real_processing
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          RC35_DIAG_CLIPS: '0'
+          EXPERIMENT_ID: ${{ steps.resolve.outputs.experiment_id }}
+          PRIVATE_SHA: ${{ steps.resolve.outputs.private_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../private_review
+          echo 'DJ Brain: private real-audio attempt started; source metadata excluded from public logs.'
+          python -m djbrain_runner.execute \
+            --experiment-id "$EXPERIMENT_ID" --mode fixed \
+            --output ../private_review \
+            --run-id "$GITHUB_RUN_ID" --code-commit "$PRIVATE_SHA" \
+            > ../private_review/DJ_BRAIN_PRIVATE_EXECUTION.log 2>&1
+          echo 'DJ Brain experiment exited. Private audio and report pending verification.'
+
+      - name: Make verifiable private archive (including partial failures)
+        id: private_archive
+        if: always() && steps.resolve.outcome == 'success' && steps.private_checkout.outcome == 'success'
+        working-directory: app
+        env:
+          EXPERIMENT_ID: ${{ steps.resolve.outputs.experiment_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../private_review
+          python - <<'PY'
+          import io,json,os,tarfile
+          from pathlib import Path
+          from djbrain_runner.package import build_private_archive,verify_private_archive
+          root=Path('../private_review')
+          archive=Path('../private_djbrain_review.tar.gz')
+          summary={'archive_complete':False,'attempted_pairs':0,'planned_variants':0,
+                   'rendered_unverified':0,'render_failed':0,'source_unavailable':0,'pending':18}
+          try:
+              build_private_archive(root,archive,expected_run_id=os.environ['GITHUB_RUN_ID'])
+              ledger=json.loads((root/'DJ_BRAIN_LEDGER.json').read_text())
+              summary=verify_private_archive(archive,ledger,allow_partial=True)
+          except Exception as exc:
+              # Preserve private diagnostic logs even if ledger validation failed.
+              # DO NOT print exception text or Telegram metadata in public Actions.
+              with tarfile.open(archive,'w:gz') as tar:
+                  log=root/'DJ_BRAIN_PRIVATE_EXECUTION.log'
+                  if log.is_file() and not log.is_symlink():
+                      tar.add(log,arcname='DJ_BRAIN_PRIVATE_EXECUTION.log')
+                  error=f'Incomplete private archive: {type(exc).__name__}\n'.encode()
+                  member=tarfile.TarInfo('PRIVATE_ARCHIVE_STATUS.txt')
+                  member.size=len(error)
+                  tar.addfile(member,io.BytesIO(error))
+              print('Full archive validation failed; private diagnostics retained.')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as outputs:
+              outputs.write('archive_complete='+str(bool(summary['archive_complete'])).lower()+'\n')
+              outputs.write('source_unavailable='+str(summary['source_unavailable'])+'\n')
+              outputs.write('pending='+str(summary['pending'])+'\n')
+              outputs.write('rendered_unverified='+str(summary['rendered_unverified'])+'\n')
+          print('DJ Brain private aggregate only: '+json.dumps({k:summary[k] for k in
+                ('attempted_pairs','planned_variants','rendered_unverified',
+                 'render_failed','source_unavailable','pending','archive_complete')}))
+          PY
+
+      - name: Upload PRIVATE draft GitHub Release, never public Actions artifacts
+        id: private_release
+        if: always() && steps.private_archive.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          EXPERIMENT_ID: ${{ steps.resolve.outputs.experiment_id }}
+        run: |
+          set -euo pipefail
+          name="djbrain-${EXPERIMENT_ID}-private-${GITHUB_RUN_ID}"
+          gh release create "$name" private_djbrain_review.tar.gz \
+            --repo volkovitskiyartem-lab/void-vibe-router \
+            --draft --title "PRIVATE DJ Brain review ${GITHUB_RUN_ID}" \
+            --notes "Audition-only experiment; no Telegram writes. All music and source IDs PRIVATE. Review required."
+          echo 'Private draft release saved. No public audio artifacts.'
+
+      - name: Fail incomplete or errored job after private diagnostic release
+        id: final_status
+        if: always()
+        env:
+          PROCESSING: ${{ steps.real_processing.outcome }}
+          ARCHIVE: ${{ steps.private_archive.outcome }}
+          RELEASE: ${{ steps.private_release.outcome }}
+          ARCHIVE_COMPLETE: ${{ steps.private_archive.outputs.archive_complete }}
+          MISSING_SOURCE_COUNT: ${{ steps.private_archive.outputs.source_unavailable }}
+          RENDERED_COUNT: ${{ steps.private_archive.outputs.rendered_unverified }}
+        run: |
+          if [ "$PROCESSING" != 'success' ] || [ "$ARCHIVE" != 'success' ] || \
+             [ "$RELEASE" != 'success' ] || [ "$ARCHIVE_COMPLETE" != 'true' ] || \
+             [ "$MISSING_SOURCE_COUNT" != '0' ] || [ "$RENDERED_COUNT" = '0' ]; then
+            echo 'DJ Brain run incomplete/failed; see PRIVATE draft release and source-safe aggregate.'
+            exit 1
+          fi
+          echo 'Infrastructure run completed; musical quality remains UNVERIFIED.'
