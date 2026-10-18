@@ -1,0 +1,52 @@
+name: Audit Fresh archive review categories (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/audit-fresh-review.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout private router state
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: router-state
+          path: state
+          persist-credentials: false
+      - name: Analyse review backlog without modifying Telegram or state
+        working-directory: state
+        run: |
+          python - <<'PY'
+          import json,sqlite3
+          from collections import Counter
+          db=sqlite3.connect('file:data/router.sqlite3?mode=ro',uri=True)
+          db.execute('PRAGMA query_only=ON')
+          print('FRESH_REVIEW_DB_INTEGRITY',db.execute('PRAGMA integrity_check').fetchone()[0])
+          columns={x[1] for x in db.execute('PRAGMA table_info(fresh_bulk_queue)')}
+          for expected in ('status','reason','genre_hint','hint_origin','message_id','media_key','track_key'):
+              if expected not in columns:raise RuntimeError('Expected review fields missing')
+          counts=dict(db.execute('SELECT status,COUNT(*) FROM fresh_bulk_queue GROUP BY status'))
+          print('FRESH_REVIEW_STATUS',json.dumps(counts,sort_keys=True))
+          reasons=[{'reason':r,'count':n} for r,n in db.execute(
+              "SELECT COALESCE(reason,'null'),COUNT(*) FROM fresh_bulk_queue WHERE status='review' GROUP BY reason ORDER BY COUNT(*) DESC")]
+          print('FRESH_REVIEW_REASONS',json.dumps(reasons,sort_keys=True))
+          origins=[{'origin':r,'count':n} for r,n in db.execute(
+              "SELECT COALESCE(hint_origin,'null'),COUNT(*) FROM fresh_bulk_queue WHERE status='review' GROUP BY hint_origin ORDER BY COUNT(*) DESC")]
+          print('FRESH_REVIEW_HINT_ORIGINS',json.dumps(origins,sort_keys=True))
+          for reason,n in db.execute("SELECT reason,COUNT(*) FROM fresh_bulk_queue WHERE status='review' GROUP BY reason ORDER BY COUNT(*) DESC"):
+              groups=[dict(origin=o,n=k) for o,k in db.execute(
+                  "SELECT COALESCE(hint_origin,''), COUNT(*) FROM fresh_bulk_queue WHERE status='review' AND reason=? GROUP BY hint_origin ORDER BY COUNT(*) DESC",(reason,))]
+              print('FRESH_REVIEW_CAUSE',json.dumps({'reason':reason,'count':n,'hint_origin':groups},sort_keys=True))
+          available=db.execute("""SELECT COUNT(*) FROM fresh_bulk_queue WHERE status='review'
+               AND media_key IS NOT NULL AND length(media_key)>0""").fetchone()[0]
+          print('FRESH_REVIEW_AUDIO_FINGERPRINT_PRESENT',available)
+          db.close()
+          PY
