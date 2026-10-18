@@ -48,5 +48,10 @@ jobs:
           available=db.execute("""SELECT COUNT(*) FROM fresh_bulk_queue WHERE status='review'
                AND media_key IS NOT NULL AND length(media_key)>0""").fetchone()[0]
           print('FRESH_REVIEW_AUDIO_FINGERPRINT_PRESENT',available)
+          breakdown=[{'hint':(hint or '')[:55], 'n':n} for hint,n in db.execute(
+              """SELECT genre_hint,COUNT(*) FROM fresh_bulk_queue
+              WHERE status='review' AND reason='destination_unverified'
+              GROUP BY genre_hint ORDER BY COUNT(*) DESC LIMIT 30""")]
+          print('FRESH_DESTINATION_GENRE_HINTS',json.dumps(breakdown,ensure_ascii=False))
           db.close()
           PY
