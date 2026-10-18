@@ -43,3 +43,31 @@ jobs:
           python dj_rc38_learning.py
           python dj_rc38_experiment.py --selftest
           echo 'RC38 source pairs were not filtered; synthetic audio tests completed. No Telegram access or real music.'
+
+  trusted-allowlist-offline-check:
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PUBLIC trusted runner resolver
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure Python for resolver tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check exact experiment allowlist and shell injection rejection
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_djbrain_resolve
+          python - <<'PY'
+          from pathlib import Path
+          from djbrain_runner.resolve import resolve_experiment
+          result=resolve_experiment('rc38-fixed',Path('djbrain_runner/approved_experiments.json'))
+          assert result['repository']=='volkovitskiyartem-lab/void-vibe-router'
+          assert len(result['commit_sha'])==40
+          print('PUBLIC resolver passed strict immutability checks. No Telegram access.')
+          PY
