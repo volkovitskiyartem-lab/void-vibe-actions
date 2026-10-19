@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   audit:
-    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && vars.FORUM_CATALOG_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
