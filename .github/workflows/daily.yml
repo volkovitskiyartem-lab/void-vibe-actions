@@ -64,7 +64,13 @@ jobs:
         working-directory: app
         run: |
           python -m pip install -r requirements.txt
-          python test_daily_track.py
+          python -m unittest -q test_daily_track test_daily_editorial_queue test_daily_caption_link
+      - name: Validate today's article and report private queue coverage
+        if: env.DAILY_MODE == 'publish'
+        working-directory: app
+        run: |
+          python daily_track.py check
+          python daily_track.py stock
       - name: Hold publication until 11 Moscow and check durable receipts
         id: timing
         if: env.DAILY_MODE == 'publish'
@@ -72,6 +78,7 @@ jobs:
         run: |
           python - <<'PY'
           import json, os, time
+          from daily_track import load_article
           from datetime import datetime
           from pathlib import Path
           from zoneinfo import ZoneInfo
@@ -87,7 +94,7 @@ jobs:
           else:
               if (state / "DAILY_IN_PROGRESS.json").exists():
                   raise SystemExit("Unfinished publication: reconcile receipts before retrying.")
-              article = json.loads(Path("../editorial/editorial/current.json").read_text())
+              article = load_article(Path("../editorial/editorial/current.json"), now.date())
               if article.get("date") != now.date().isoformat():
                   raise SystemExit("Today's researched article is not ready.")
               target = now.replace(hour=11, minute=0, second=0, microsecond=0)
@@ -116,7 +123,7 @@ jobs:
         working-directory: progress
         run: |
           set -euo pipefail
-          for path in data/daily_pool.json data/daily_candidates.json data/daily_history.json data/DAILY_IN_PROGRESS.json; do
+          for path in data/daily_pool.json data/daily_candidates.json data/daily_history.json data/DAILY_IN_PROGRESS.json data/daily_stock_alert.json; do
             if test -f "$path" || git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
               git add -A -- "$path"
             fi
