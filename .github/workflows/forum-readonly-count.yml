@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   checkpoint:
-    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main'
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
