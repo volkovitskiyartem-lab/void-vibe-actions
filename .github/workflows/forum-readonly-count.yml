@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '12 * * * *'
+  push:
+    branches: [main]
+    paths: ['.github/workflows/forum-readonly-count.yml']
 
 permissions:
   contents: read
@@ -15,7 +18,7 @@ concurrency:
 
 jobs:
   checkpoint:
-    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main'
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -65,33 +68,62 @@ jobs:
         if: steps.gate.outputs.scan == 'true'
         working-directory: app
         run: python -m pip install -r requirements.txt
-      - name: Scan at most 300 messages, never send or download media
+      - name: Scan in five bounded pages and durably checkpoint each page
         if: steps.gate.outputs.scan == 'true'
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
           ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
-        run: |
-          python app/telegram_forum_checkpoint.py \
-            --input audit-state/data/forum-audit/checkpoint.json \
-            --output "$RUNNER_TEMP/forum-next.json" --limit 300
-      - name: Save cursor and metadata ONLY in private audit branch
-        if: steps.gate.outputs.scan == 'true'
-        env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          test -s "$RUNNER_TEMP/forum-next.json"
           mkdir -p audit-state/data/forum-audit
-          install -m 600 "$RUNNER_TEMP/forum-next.json" audit-state/data/forum-audit/checkpoint.json
-          cd audit-state
-          git config user.name 'void-vibe-audit'
-          git config user.email 'void-vibe-audit@users.noreply.github.com'
-          git add -f -- data/forum-audit/checkpoint.json
-          if ! git diff --cached --quiet; then
-            git commit -q -m 'Save read-only forum inventory checkpoint'
-            gh auth setup-git
-            git push --quiet origin HEAD:refs/heads/state/telegram-forum-inventory
-          fi
+          git -C audit-state config user.name 'void-vibe-audit'
+          git -C audit-state config user.email 'void-vibe-audit@users.noreply.github.com'
+          gh auth setup-git
+          for page in 1 2 3 4 5; do
+            python app/telegram_forum_checkpoint.py \
+              --input audit-state/data/forum-audit/checkpoint.json \
+              --output "$RUNNER_TEMP/forum-page-$page.json" --limit 300
+            install -m 600 "$RUNNER_TEMP/forum-page-$page.json" audit-state/data/forum-audit/checkpoint.json
+            python - <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          sys.path.insert(0, str(Path('app').resolve()))
+          from telegram_forum_checkpoint import private_summary
+          data = json.loads(Path('audit-state/data/forum-audit/checkpoint.json').read_text())
+          status = {'schema': 1, 'updated_at': datetime.now(timezone.utc).isoformat(),
+                    **private_summary(data)}
+          path = Path('audit-state/data/forum-audit/status.json')
+          path.write_text(json.dumps(status, sort_keys=True) + '\n', encoding='utf-8')
+          os.chmod(path, 0o600)
+          print('PRIVATE_FORUM_PROGRESS=' + json.dumps(status, sort_keys=True))
+          PY
+            git -C audit-state add -f -- data/forum-audit/checkpoint.json data/forum-audit/status.json
+            if ! git -C audit-state diff --cached --quiet; then
+              git -C audit-state commit -q -m 'Persist bounded read-only forum scan'
+              git -C audit-state push --quiet origin HEAD:refs/heads/state/telegram-forum-inventory
+            fi
+            stage="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('audit-state/data/forum-audit/checkpoint.json').read_text())
+          if data['complete']:
+              print('complete')
+          elif data.get('error') or data.get('blocked_until'):
+              print('blocked')
+          else:
+              print('ready')
+          PY
+            )"
+            if test "$stage" != 'ready'; then
+              echo "FORUM_SCAN_STOP=$stage"
+              break
+            fi
+            if test "$page" -lt 5; then sleep 45; fi
+          done
           echo 'PRIVATE_FORUM_CHECKPOINT_SAVED=true'
