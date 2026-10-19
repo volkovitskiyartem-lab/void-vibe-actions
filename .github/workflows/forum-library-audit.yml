@@ -1,0 +1,89 @@
+name: VOID VIBE forum library audit (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/forum-library-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: void-vibe-forum-readonly-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ROUTER_STATE_DIR: ${{ github.workspace }}/state/data
+      FORUM_LIBRARY_AUDIT_OUTPUT: ${{ github.workspace }}/reports/reports/forum_library_audit.json
+    steps:
+      - name: Checkout reviewed private source (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: app
+          persist-credentials: false
+
+      - name: Checkout router state without write credentials
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: router-state
+          path: state
+          persist-credentials: false
+
+      - name: Checkout dedicated PRIVATE report branch
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: library-reports
+          path: reports
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate code without connecting to Telegram
+        working-directory: app
+        run: |
+          python -m pip install -r requirements.txt
+          python -m compileall -q forum_library_catalog.py forum_library_audit.py test_forum_library_catalog.py
+          python -m unittest -v test_forum_library_catalog
+
+      - name: Run complete metadata-only forum audit
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: python -u forum_library_audit.py
+
+      - name: Persist catalog and aggregate report in PRIVATE branch
+        working-directory: reports
+        run: |
+          set -euo pipefail
+          test -s reports/forum_library_audit.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path("reports/forum_library_audit.json").read_text())
+          assert report["schema"] == 1
+          assert report["topic_count"] > 0
+          assert report["scanned_messages"] >= report["audio_count"]
+          assert report["indexed_count"] <= report["audio_count"]
+          assert all("message_url" in item for item in report["catalog"])
+          print("Forum audit report verified; stored only in private repository.")
+          PY
+          git config user.name 'void-vibe-library-audit'
+          git config user.email 'void-vibe-library-audit@users.noreply.github.com'
+          git add reports/forum_library_audit.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Save read-only forum library audit and release-date catalog'
+            git push origin HEAD:library-reports
+          fi
