@@ -24,7 +24,7 @@ jobs:
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: main
+          ref: 9344445e7f6b304dbad23342f547a4c7432eab34
           path: app
           persist-credentials: false
 
