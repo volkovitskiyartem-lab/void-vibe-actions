@@ -62,9 +62,14 @@ jobs:
                   phase[0] = 'snapshot'
                   target = await client.get_entity('void_vibe_promo')
                   snapshot = await TelegramTransport(client, target).snapshot()
+                  kinds = Counter(m['kind'] for m in snapshot['messages'])
+                  print('READ_ONLY_SCANNED=' + json.dumps({
+                      'media_messages': len(snapshot['messages']),
+                      'audio': kinds['audio'], 'photo': kinds['photo'],
+                      'image': kinds['image'],
+                  }, sort_keys=True))
                   phase[0] = 'plan'
                   proposal = plan(snapshot, policy)
-                  kinds = Counter(m['kind'] for m in snapshot['messages'])
                   blocked = Counter(row['reason'] for row in proposal['blocked'])
                   print('READ_ONLY_COUNTS=' + json.dumps({
                       'media_messages': len(snapshot['messages']),
