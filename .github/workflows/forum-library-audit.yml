@@ -4,6 +4,8 @@ on:
     branches: [main]
     paths: ['.github/workflows/forum-library-audit.yml']
   workflow_dispatch:
+  pull_request:
+    paths: ['.github/workflows/forum-library-audit.yml']
   schedule:
     - cron: '30 22 * * *' # 01:30 Moscow: after daily music windows
 permissions:
@@ -13,6 +15,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate YAML without privileged tokens
+        run: |
+          python -m pip install -q PyYAML
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          content=Path('.github/workflows/forum-library-audit.yml').read_text()
+          d=yaml.safe_load(content)
+          assert isinstance(d['jobs']['audit']['steps'],list)
+          assert d['permissions']['contents'] == 'read'
+          assert 'schedule' in (d.get('on') or d.get(True))
+          assert 'FORUM_CATALOG_PAUSED' in content
+          assert 'forum_catalog_render.py' in content
+          assert 'ref: 26d8c04855c5ad3801697d1c31da0ee449246ac5' in content
+          print('Read-only forum catalog workflow YAML: OK')
+          PY
   audit:
     if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && vars.FORUM_CATALOG_PAUSED != 'true'
     runs-on: ubuntu-latest
