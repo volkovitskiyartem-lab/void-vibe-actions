@@ -4,6 +4,10 @@ on:
     branches: [main]
     paths: ['.github/workflows/forum-library-audit.yml']
   workflow_dispatch:
+  pull_request:
+    paths: ['.github/workflows/forum-library-audit.yml']
+  schedule:
+    - cron: '30 22 * * *' # 01:30 Moscow: after daily music windows
 permissions:
   contents: read
 concurrency:
@@ -11,8 +15,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate YAML without privileged tokens
+        run: |
+          python -m pip install -q PyYAML
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          content=Path('.github/workflows/forum-library-audit.yml').read_text()
+          d=yaml.safe_load(content)
+          assert isinstance(d['jobs']['audit']['steps'],list)
+          assert d['permissions']['contents'] == 'read'
+          assert 'schedule' in (d.get('on') or d.get(True))
+          assert 'FORUM_CATALOG_PAUSED' in content
+          assert 'forum_catalog_render.py' in content
+          assert 'ref: 26d8c04855c5ad3801697d1c31da0ee449246ac5' in content
+          print('Read-only forum catalog workflow YAML: OK')
+          PY
   audit:
-    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && vars.FORUM_CATALOG_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -24,7 +50,7 @@ jobs:
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: 9344445e7f6b304dbad23342f547a4c7432eab34
+          ref: 26d8c04855c5ad3801697d1c31da0ee449246ac5
           path: app
           persist-credentials: false
 
@@ -53,8 +79,8 @@ jobs:
         working-directory: app
         run: |
           python -m pip install -r requirements.txt
-          python -m compileall -q forum_library_catalog.py forum_library_audit.py test_forum_library_catalog.py
-          python -m unittest -v test_forum_library_catalog
+          python -m compileall -q forum_library_catalog.py forum_library_audit.py forum_catalog_render.py test_forum_library_catalog.py test_forum_catalog_render.py
+          python -m unittest -v test_forum_library_catalog test_forum_catalog_render
 
       - name: Run complete metadata-only forum audit
         working-directory: app
@@ -63,6 +89,14 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
         run: python -u forum_library_audit.py
+
+      - name: Rebuild chronological catalog from verified report
+        working-directory: app
+        run: |
+          python -u forum_catalog_render.py \
+            --audit ../reports/reports/forum_library_audit.json \
+            --plan ../reports/reports/forum_compaction_preview.json \
+            --output ../reports/reports/catalog
 
       - name: Persist catalog and aggregate report in PRIVATE branch
         working-directory: reports
@@ -83,6 +117,7 @@ jobs:
           git config user.name 'void-vibe-library-audit'
           git config user.email 'void-vibe-library-audit@users.noreply.github.com'
           git add reports/forum_library_audit.json
+          git add -A reports/catalog/
           if ! git diff --cached --quiet; then
             git commit -m 'Save read-only forum library audit and release-date catalog'
             git push origin HEAD:library-reports
