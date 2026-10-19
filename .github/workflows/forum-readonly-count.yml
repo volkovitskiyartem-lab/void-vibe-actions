@@ -1,4 +1,4 @@
-name: VOID VIBE read-only forum count
+name: VOID VIBE read-only forum checkpoint
 
 on:
   workflow_dispatch:
@@ -8,86 +8,65 @@ on:
 
 permissions:
   contents: read
+
+# Never overlap live music publishing or another forum inventory.
 concurrency:
   group: void-vibe-music-transfer
   cancel-in-progress: false
 
 jobs:
-  count:
+  checkpoint:
     if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout audited private reader at immutable commit
+        uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: 5f4a97365bd7a870e501e7734896e0e056752f91
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: 6e374dfaf249197921fdc77f5015a07e113d0c36
+          path: app
+          persist-credentials: false
+      - name: Checkout private audit state (never uploaded or logged)
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: state/telegram-forum-inventory
+          path: audit-state
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -r requirements.txt
-      - name: Count accessible forum media (read-only; totals only)
+      - name: Install pinned Telegram client
+        working-directory: app
+        run: python -m pip install -r requirements.txt
+      - name: Scan at most 300 messages, never send or download media
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
           ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
         run: |
-          python - <<'PY'
-          import asyncio
-          import json
-          from collections import Counter
-          from telethon import TelegramClient
-          from telethon.sessions import StringSession
-          from forum_topic_policy import load_policy
-          from telegram_safe_migration import TelegramTransport, connection_settings, plan
-
-          phase = ['settings']
-          async def main():
-              policy = load_policy()
-              if policy.get('migration_prohibited') is not True:
-                  raise RuntimeError('Migration must remain prohibited')
-              session, api_id, api_hash = connection_settings()
-              client = TelegramClient(StringSession(session), api_id, api_hash,
-                                      request_retries=0, connection_retries=0,
-                                      flood_sleep_threshold=0)
-              phase[0] = 'connect'
-              await client.connect()
-              try:
-                  phase[0] = 'authorization'
-                  if not await client.is_user_authorized():
-                      raise RuntimeError('Not authorized')
-                  phase[0] = 'snapshot'
-                  target = await client.get_entity('void_vibe_promo')
-                  snapshot = await TelegramTransport(client, target).snapshot()
-                  kinds = Counter(m['kind'] for m in snapshot['messages'])
-                  print('READ_ONLY_SCANNED=' + json.dumps({
-                      'media_messages': len(snapshot['messages']),
-                      'audio': kinds['audio'], 'photo': kinds['photo'],
-                      'image': kinds['image'],
-                  }, sort_keys=True))
-                  phase[0] = 'plan'
-                  proposal = plan(snapshot, policy)
-                  blocked = Counter(row['reason'] for row in proposal['blocked'])
-                  print('READ_ONLY_COUNTS=' + json.dumps({
-                      'media_messages': len(snapshot['messages']),
-                      'audio': kinds['audio'], 'photo': kinds['photo'],
-                      'image': kinds['image'],
-                      'migration_candidates': len(proposal['items']),
-                      'blocked_audio': len(proposal['blocked']),
-                      'blocked_reasons': dict(sorted(blocked.items())),
-                      'migration_prohibited': True,
-                      'sent': 0, 'deleted': 0,
-                  }, sort_keys=True))
-              finally:
-                  await client.disconnect()
-
-          try:
-              asyncio.run(main())
-          except Exception as exc:
-              print('READ_ONLY_FAILED_STAGE=' + phase[0])
-              print('READ_ONLY_ERROR_CLASS=' + type(exc).__name__)
-              raise SystemExit('Read-only count could not complete; identifiers suppressed.')
-          PY
+          python app/telegram_forum_checkpoint.py \
+            --input audit-state/data/forum-audit/checkpoint.json \
+            --output "$RUNNER_TEMP/forum-next.json" --limit 300
+      - name: Save cursor and metadata ONLY in private audit branch
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/forum-next.json"
+          mkdir -p audit-state/data/forum-audit
+          install -m 600 "$RUNNER_TEMP/forum-next.json" audit-state/data/forum-audit/checkpoint.json
+          cd audit-state
+          git config user.name 'void-vibe-audit'
+          git config user.email 'void-vibe-audit@users.noreply.github.com'
+          git add -f -- data/forum-audit/checkpoint.json
+          if ! git diff --cached --quiet; then
+            git commit -q -m 'Save read-only forum inventory checkpoint'
+            gh auth setup-git
+            git push --quiet origin HEAD:refs/heads/state/telegram-forum-inventory
+          fi
+          echo 'PRIVATE_FORUM_CHECKPOINT_SAVED=true'
