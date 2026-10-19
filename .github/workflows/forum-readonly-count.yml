@@ -2,9 +2,8 @@ name: VOID VIBE read-only forum checkpoint
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/forum-readonly-count.yml']
+  schedule:
+    - cron: '12 * * * *'
 
 permissions:
   contents: read
@@ -36,13 +35,38 @@ jobs:
           ref: state/telegram-forum-inventory
           path: audit-state
           persist-credentials: false
+      - name: Stop after completion or during Telegram cooldown
+        id: gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          file = Path('audit-state/data/forum-audit/checkpoint.json')
+          state = json.loads(file.read_text()) if file.exists() else None
+          if state is not None:
+              if state.get('schema') != 1 or type(state.get('complete')) is not bool:
+                  raise SystemExit('Invalid private checkpoint')
+              if state.get('error') not in (None, 'FloodWaitError'):
+                  raise SystemExit('Unresolved private checkpoint error')
+          until = state.get('blocked_until') if state else None
+          cooldown = bool(until and datetime.fromisoformat(until) > datetime.now(timezone.utc))
+          complete = bool(state and state['complete'])
+          scan = not complete and not cooldown
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('scan=' + str(scan).lower() + '\n')
+          print('FORUM_SCAN_GATE=' + ('complete' if complete else 'cooldown' if cooldown else 'ready'))
+          PY
       - uses: actions/setup-python@v5
+        if: steps.gate.outputs.scan == 'true'
         with:
           python-version: '3.12'
       - name: Install pinned Telegram client
+        if: steps.gate.outputs.scan == 'true'
         working-directory: app
         run: python -m pip install -r requirements.txt
       - name: Scan at most 300 messages, never send or download media
+        if: steps.gate.outputs.scan == 'true'
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
@@ -53,6 +77,7 @@ jobs:
             --input audit-state/data/forum-audit/checkpoint.json \
             --output "$RUNNER_TEMP/forum-next.json" --limit 300
       - name: Save cursor and metadata ONLY in private audit branch
+        if: steps.gate.outputs.scan == 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
