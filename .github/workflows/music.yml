@@ -204,6 +204,8 @@ jobs:
           MAX_SENDS_PER_SOURCE: '60'
           ARCHIVE_RETENTION_CHECKS: 'true'
           IMPORT_RECEIPTS: 'true'
+          # Opt-in only: leave unset/false until the 18 existing roots are verified.
+          FORUM_COMPACT_ROUTING: ${{ vars.FORUM_COMPACT_ROUTING == 'true' && 'true' || 'false' }}
           PUBLISH_SPACING_SECONDS: '120'
         run: python cloud_run.py
       - name: Persist progress even after errors
