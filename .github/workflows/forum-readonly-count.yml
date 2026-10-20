@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   checkpoint:
-    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -67,7 +67,7 @@ jobs:
               output.write('scan=' + str(scan).lower() + '\n')
           print('FORUM_SCAN_GATE=' + ('complete' if complete else 'cooldown' if cooldown else 'ready'))
           PY
-      - name: Skip duplicate or too-recent fallback scan
+      - name: Guard inventory against recent progress and concurrent runs
         id: fallback_gate
         if: steps.gate.outputs.scan == 'true'
         env:
@@ -82,44 +82,60 @@ jobs:
           from datetime import datetime, timedelta, timezone
           from pathlib import Path
 
-          should_scan = True
-          if os.environ['EVENT_NAME'] == 'workflow_run':
-              path = Path('audit-state/data/forum-audit/status.json')
-              if not path.exists():
-                  raise SystemExit('Missing private aggregate status: fallback refuses to scan')
-              state = json.loads(path.read_text())
-              timestamp = datetime.fromisoformat(state['updated_at'].replace('Z', '+00:00'))
-              if timestamp.tzinfo is None:
-                  raise SystemExit('Invalid checkpoint timestamp')
-              now = datetime.now(timezone.utc)
-              if state.get('schema') != 1 or state.get('complete') is not False:
-                  raise SystemExit('Unexpected aggregate checkpoint state')
-              if timestamp > now + timedelta(minutes=2):
-                  raise SystemExit('Future checkpoint timestamp')
-              if now - timestamp < timedelta(minutes=75):
-                  should_scan = False
-                  print('FORUM_FALLBACK=recent_checkpoint')
-              else:
-                  run_list = json.loads(subprocess.check_output(
-                      ['gh', 'api', 'repos/volkovitskiyartem-lab/void-vibe-actions/actions/workflows/forum-readonly-count.yml/runs?per_page=30'], text=True))
-                  others = [r for r in run_list['workflow_runs'] if str(r['id']) != os.environ['RUN_ID']]
-                  busy = {'queued', 'in_progress', 'pending', 'waiting', 'requested'}
-                  if any(r.get('status') in busy for r in others):
-                      should_scan = False
-                      print('FORUM_FALLBACK=other_inventory_active')
-                  elif any(now - datetime.fromisoformat(r['created_at'].replace('Z', '+00:00')) < timedelta(minutes=65) for r in others):
-                      should_scan = False
-                      print('FORUM_FALLBACK=recently_triggered')
-                  elif others and others[0].get('conclusion') in ('failure', 'cancelled', 'timed_out'):
-                      should_scan = False
-                      print('FORUM_FALLBACK=previous_failure')
-                  else:
-                      print('FORUM_FALLBACK=eligible')
-          else:
-              print('FORUM_FALLBACK=scheduled_or_manual')
+          def utc_time(value):
+              dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+              if dt.tzinfo is None:
+                  raise ValueError('Inventory timestamp must be timezone aware')
+              return dt.astimezone(timezone.utc)
 
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('scan=' + str(should_scan).lower() + '\n')
+          status_path = Path('audit-state/data/forum-audit/status.json')
+          if not status_path.exists():
+              raise SystemExit('Missing private aggregate checkpoint; refusing to scan')
+          state = json.loads(status_path.read_text())
+          if (state.get('schema') != 1 or type(state.get('complete')) is not bool or
+                  type(state.get('scanned')) is not int or state['scanned'] < 0):
+              raise SystemExit('Invalid aggregate checkpoint; refusing to scan')
+          if state.get('error') is not None:
+              raise SystemExit('Inventory error requires investigation')
+          now = datetime.now(timezone.utc)
+          updated = utc_time(state['updated_at'])
+          if updated > now + timedelta(minutes=2):
+              raise SystemExit('Future checkpoint timestamp; refusing to scan')
+
+          reason = 'eligible'
+          allow = True
+          if state['complete']:
+              allow, reason = False, 'complete'
+          elif state.get('blocked_until') and utc_time(state['blocked_until']) > now:
+              allow, reason = False, 'telegram_cooldown'
+          elif (os.environ['EVENT_NAME'] != 'workflow_dispatch' and
+                now - updated < timedelta(minutes=25)):
+              # The persisted checkpoint, NOT any green but skipped workflow,
+              # is the only clock that throttles automated inventory scans.
+              allow, reason = False, 'recent_checkpoint'
+          else:
+              runs = json.loads(subprocess.check_output(
+                  ['gh', 'api',
+                   'repos/volkovitskiyartem-lab/void-vibe-actions/actions/workflows/forum-readonly-count.yml/runs?per_page=40'],
+                  text=True))['workflow_runs']
+              others = [r for r in runs if str(r['id']) != os.environ['RUN_ID']]
+              active = {'queued', 'in_progress', 'pending', 'waiting', 'requested'}
+              if any(r.get('status') in active for r in others):
+                  allow, reason = False, 'other_inventory_active'
+              elif any(r.get('conclusion') in ('failure', 'cancelled', 'timed_out') and
+                       utc_time(r['created_at']) > updated for r in others):
+                  raise SystemExit('Unresolved failed inventory since last checkpoint')
+              else:
+                  reason = 'eligible'
+
+          print('FORUM_FALLBACK=' + reason)
+          print('FORUM_SCAN_ENABLED=' + str(allow).lower())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('scan=' + str(allow).lower() + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('Read-only forum inventory: **' + reason +
+                            '**; Telegram scan: **' +
+                            ('enabled' if allow else 'skipped') + '**\n')
           PY
       - uses: actions/setup-python@v5
         if: steps.gate.outputs.scan == 'true' && steps.fallback_gate.outputs.scan == 'true'
