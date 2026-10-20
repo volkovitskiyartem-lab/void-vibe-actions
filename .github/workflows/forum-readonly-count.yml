@@ -4,6 +4,12 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '12 * * * *'
+  workflow_run:
+    workflows:
+      - Fresh Electronic Music accelerated historical archive
+      - VOID VIBE daily collect and drip publishing
+    types: [completed]
+    branches: [main]
   push:
     branches: [main]
     paths: ['.github/workflows/forum-readonly-count.yml']
