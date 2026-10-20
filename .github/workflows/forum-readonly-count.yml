@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Never overlap live music publishing or another forum inventory.
 concurrency:
