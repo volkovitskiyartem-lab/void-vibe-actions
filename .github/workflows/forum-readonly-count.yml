@@ -122,15 +122,15 @@ jobs:
               output.write('scan=' + str(should_scan).lower() + '\n')
           PY
       - uses: actions/setup-python@v5
-        if: steps.gate.outputs.scan == 'true'
+        if: steps.gate.outputs.scan == 'true' && steps.fallback_gate.outputs.scan == 'true'
         with:
           python-version: '3.12'
       - name: Install pinned Telegram client
-        if: steps.gate.outputs.scan == 'true'
+        if: steps.gate.outputs.scan == 'true' && steps.fallback_gate.outputs.scan == 'true'
         working-directory: app
         run: python -m pip install -r requirements.txt
       - name: Scan in five bounded pages and durably checkpoint each page
-        if: steps.gate.outputs.scan == 'true'
+        if: steps.gate.outputs.scan == 'true' && steps.fallback_gate.outputs.scan == 'true'
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
