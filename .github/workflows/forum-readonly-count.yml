@@ -4,12 +4,19 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '12 * * * *'
+  workflow_run:
+    workflows:
+      - Fresh Electronic Music accelerated historical archive
+      - VOID VIBE daily collect and drip publishing
+    types: [completed]
+    branches: [main]
   push:
     branches: [main]
     paths: ['.github/workflows/forum-readonly-count.yml']
 
 permissions:
   contents: read
+  actions: read
 
 # Never overlap live music publishing or another forum inventory.
 concurrency:
@@ -18,7 +25,7 @@ concurrency:
 
 jobs:
   checkpoint:
-    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -60,16 +67,70 @@ jobs:
               output.write('scan=' + str(scan).lower() + '\n')
           print('FORUM_SCAN_GATE=' + ('complete' if complete else 'cooldown' if cooldown else 'ready'))
           PY
-      - uses: actions/setup-python@v5
+      - name: Skip duplicate or too-recent fallback scan
+        id: fallback_gate
         if: steps.gate.outputs.scan == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          should_scan = True
+          if os.environ['EVENT_NAME'] == 'workflow_run':
+              path = Path('audit-state/data/forum-audit/status.json')
+              if not path.exists():
+                  raise SystemExit('Missing private aggregate status: fallback refuses to scan')
+              state = json.loads(path.read_text())
+              timestamp = datetime.fromisoformat(state['updated_at'].replace('Z', '+00:00'))
+              if timestamp.tzinfo is None:
+                  raise SystemExit('Invalid checkpoint timestamp')
+              now = datetime.now(timezone.utc)
+              if state.get('schema') != 1 or state.get('complete') is not False:
+                  raise SystemExit('Unexpected aggregate checkpoint state')
+              if timestamp > now + timedelta(minutes=2):
+                  raise SystemExit('Future checkpoint timestamp')
+              if now - timestamp < timedelta(minutes=75):
+                  should_scan = False
+                  print('FORUM_FALLBACK=recent_checkpoint')
+              else:
+                  run_list = json.loads(subprocess.check_output(
+                      ['gh', 'api', 'repos/volkovitskiyartem-lab/void-vibe-actions/actions/workflows/forum-readonly-count.yml/runs?per_page=30'], text=True))
+                  others = [r for r in run_list['workflow_runs'] if str(r['id']) != os.environ['RUN_ID']]
+                  busy = {'queued', 'in_progress', 'pending', 'waiting', 'requested'}
+                  if any(r.get('status') in busy for r in others):
+                      should_scan = False
+                      print('FORUM_FALLBACK=other_inventory_active')
+                  elif any(now - datetime.fromisoformat(r['created_at'].replace('Z', '+00:00')) < timedelta(minutes=65) for r in others):
+                      should_scan = False
+                      print('FORUM_FALLBACK=recently_triggered')
+                  elif others and others[0].get('conclusion') in ('failure', 'cancelled', 'timed_out'):
+                      should_scan = False
+                      print('FORUM_FALLBACK=previous_failure')
+                  else:
+                      print('FORUM_FALLBACK=eligible')
+          else:
+              print('FORUM_FALLBACK=scheduled_or_manual')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('scan=' + str(should_scan).lower() + '\n')
+          PY
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.scan == 'true' && steps.fallback_gate.outputs.scan == 'true'
         with:
           python-version: '3.12'
       - name: Install pinned Telegram client
-        if: steps.gate.outputs.scan == 'true'
+        if: steps.gate.outputs.scan == 'true' && steps.fallback_gate.outputs.scan == 'true'
         working-directory: app
         run: python -m pip install -r requirements.txt
       - name: Scan in five bounded pages and durably checkpoint each page
-        if: steps.gate.outputs.scan == 'true'
+        if: steps.gate.outputs.scan == 'true' && steps.fallback_gate.outputs.scan == 'true'
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
