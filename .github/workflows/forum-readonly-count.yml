@@ -133,7 +133,15 @@ jobs:
                   ['gh', 'api',
                    'repos/volkovitskiyartem-lab/void-vibe-actions/actions/workflows/forum-readonly-count.yml/runs?per_page=40'],
                   text=True))['workflow_runs']
-              others = [r for r in runs if str(r['id']) != os.environ['RUN_ID']]
+              # PR validation jobs cannot access Telegram and must never
+              # poison or hold up the production inventory checkpoint.
+              production_events = {'schedule', 'workflow_run', 'push', 'workflow_dispatch'}
+              others = [
+                  r for r in runs
+                  if str(r['id']) != os.environ['RUN_ID']
+                  and r.get('head_branch') == 'main'
+                  and r.get('event') in production_events
+              ]
               active = {'queued', 'in_progress', 'pending', 'waiting', 'requested'}
               if any(r.get('status') in active for r in others):
                   allow, reason = False, 'other_inventory_active'
