@@ -133,14 +133,65 @@ jobs:
                   ['gh', 'api',
                    'repos/volkovitskiyartem-lab/void-vibe-actions/actions/workflows/forum-readonly-count.yml/runs?per_page=40'],
                   text=True))['workflow_runs']
-              others = [r for r in runs if str(r['id']) != os.environ['RUN_ID']]
+              # PR validation jobs cannot access Telegram and must never
+              # poison or hold up the production inventory checkpoint.
+              production_events = {'schedule', 'workflow_run', 'push', 'workflow_dispatch'}
+              others = [
+                  r for r in runs
+                  if str(r['id']) != os.environ['RUN_ID']
+                  and r.get('head_branch') == 'main'
+                  and r.get('event') in production_events
+              ]
               active = {'queued', 'in_progress', 'pending', 'waiting', 'requested'}
               if any(r.get('status') in active for r in others):
                   allow, reason = False, 'other_inventory_active'
-              elif any(r.get('conclusion') in ('failure', 'cancelled', 'timed_out') and
-                       utc_time(r['created_at']) > updated for r in others):
-                  raise SystemExit('Unresolved failed inventory since last checkpoint')
               else:
+                  # Green or skipped pre-scan workflow runs are not progress.
+                  # Likewise, a cancelled run with no job never reached Telegram.
+                  # Inspect the actual Scan step before treating any prior
+                  # cancelled / failed run as an unsafe interrupted read.
+                  suspect = [
+                      r for r in others
+                      if r.get('conclusion') in ('failure', 'cancelled', 'timed_out')
+                      and utc_time(r['created_at']) > updated
+                  ]
+                  if len(suspect) > 25:
+                      raise SystemExit('Too many failed runs to classify safely')
+                  scan_step = 'Scan in five bounded pages and durably checkpoint each page'
+                  guard_step = 'Guard inventory against recent progress and concurrent runs'
+                  for previous in suspect:
+                      job_info = json.loads(subprocess.check_output(
+                          ['gh', 'api',
+                           'repos/volkovitskiyartem-lab/void-vibe-actions/actions/runs/'
+                           + str(previous['id']) + '/jobs?per_page=100'],
+                          text=True))
+                      jobs = job_info['jobs']
+                      if not jobs and previous['conclusion'] == 'cancelled':
+                          # Cancelled while queued: no steps and no Telegram access.
+                          print('FORUM_PRIOR=cancelled_before_job')
+                          continue
+                      checkpoints = [j for j in jobs if j.get('name') == 'checkpoint']
+                      if len(checkpoints) != 1:
+                          raise SystemExit('Ambiguous failed inventory job; inspect manually')
+                      steps = checkpoints[0].get('steps') or []
+                      scans = [step for step in steps if step.get('name') == scan_step]
+                      if len(scans) != 1:
+                          raise SystemExit('Unknown previous Telegram scan step')
+                      scan_conclusion = scans[0].get('conclusion')
+                      if scan_conclusion == 'success':
+                          # Its page-by-page state was durably checkpointed.
+                          print('FORUM_PRIOR=scan_completed')
+                          continue
+                      if scan_conclusion == 'skipped':
+                          guards = [step for step in steps if step.get('name') == guard_step]
+                          if (previous['conclusion'] == 'cancelled' or
+                                  len(guards) == 1 and guards[0].get('conclusion') == 'failure'):
+                              # No Telegram was touched: no self-poisoning chain.
+                              print('FORUM_PRIOR=never_scanned')
+                              continue
+                      # In particular, failure/cancellation/timeout DURING Scan
+                      # remains fail-closed, protecting ambiguous page writes.
+                      raise SystemExit('Previous Telegram scan failed or is ambiguous')
                   reason = 'eligible'
 
           print('FORUM_FALLBACK=' + reason)
