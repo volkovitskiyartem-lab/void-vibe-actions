@@ -1,0 +1,80 @@
+name: VOID VIBE completed forum inventory — PRIVATE read-only plan
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/forum-readonly-plan.yml'
+      - 'scripts/forum_readonly_summary.py'
+      - 'tests/test_forum_readonly_summary.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/forum-readonly-plan.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No Telegram work (including publishing) may overlap with private snapshot planning.
+concurrency:
+  group: void-vibe-music-transfer
+  cancel-in-progress: false
+
+jobs:
+  offline_summary_tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test aggregation on synthetic data — no sessions or private repo
+        run: python -m unittest discover -s tests -p 'test_forum_readonly_summary.py' -v
+
+  private_readonly_plan:
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout report-only tooling
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Checkout audited PRIVATE reader at immutable SHA
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: 6e374dfaf249197921fdc77f5015a07e113d0c36
+          path: app
+          persist-credentials: false
+      - name: Checkout PRIVATE completed inventory
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: state/telegram-forum-inventory
+          path: audit-state
+          persist-credentials: false
+      - name: Require completed scan and enabled prohibition
+        run: |
+          python tooling/scripts/forum_readonly_summary.py \
+            --private-reader app \
+            --private-state audit-state \
+            --report audit-state/data/forum-audit/compact-routing-plan-summary.json
+      - name: Commit aggregate report to PRIVATE audit branch only
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          git -C audit-state config user.name 'void-vibe-audit'
+          git -C audit-state config user.email 'void-vibe-audit@users.noreply.github.com'
+          gh auth setup-git
+          git -C audit-state add -f -- data/forum-audit/compact-routing-plan-summary.json
+          if ! git -C audit-state diff --cached --quiet; then
+            git -C audit-state commit -q -m 'Save private aggregate-only forum migration preflight'
+            git -C audit-state push --quiet origin HEAD:refs/heads/state/telegram-forum-inventory
+          fi
+          echo 'PRIVATE_FORUM_READONLY_PLAN_SAVED=true'
