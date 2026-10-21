@@ -70,7 +70,10 @@ class ReadOnlyGateTests(unittest.TestCase):
                 "EVENT_NAME": event,
                 "GITHUB_OUTPUT": str(root / "outputs"),
                 "GITHUB_STEP_SUMMARY": str(root / "summary"),
-                "MOCK_GH_RESPONSE": json.dumps({"workflow_runs": runs or []}),
+                "MOCK_GH_RESPONSE": json.dumps({"workflow_runs": [
+                    {"head_branch": "main", "event": "schedule", **item}
+                    for item in (runs or [])
+                ]}),
                 "MOCK_JOBS_BY_RUN": json.dumps(jobs_by_run or {}),
             })
             p = subprocess.run(
@@ -128,6 +131,22 @@ class ReadOnlyGateTests(unittest.TestCase):
         })
         self.assertNotEqual(p.returncode, 0)
         self.assertNotIn("scan=true", out)
+
+    def test_failed_pull_request_ci_does_not_poison_production(self):
+        bad_ci = {"id": 110, "status": "completed", "conclusion": "failure",
+                  "created_at": datetime.now(timezone.utc).isoformat(),
+                  "head_branch": "fix/only-tests", "event": "pull_request"}
+        p, out = self.run_gate(minutes_old=45, runs=[bad_ci])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("scan=true", out)
+
+    def test_queued_pull_request_ci_does_not_block_production(self):
+        queued_ci = {"id": 111, "status": "queued", "conclusion": None,
+                     "created_at": datetime.now(timezone.utc).isoformat(),
+                     "head_branch": "fix/only-tests", "event": "pull_request"}
+        p, out = self.run_gate(minutes_old=45, runs=[queued_ci])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("scan=true", out)
 
     def test_cancelled_pre_job_does_not_poison_checkpoint(self):
         cancelled = {"id": 103, "status": "completed", "conclusion": "cancelled",
