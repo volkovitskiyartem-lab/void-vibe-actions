@@ -33,7 +33,7 @@ def guard_source():
 class ReadOnlyGateTests(unittest.TestCase):
     def run_gate(self, *, minutes_old=45, event="workflow_run", complete=False,
                  error=None, blocked_until=None, scanned=15000, runs=None,
-                 timestamp=None):
+                 timestamp=None, jobs_by_run=None):
         now = datetime.now(timezone.utc)
         timestamp = timestamp or (now - timedelta(minutes=minutes_old)).isoformat()
         state = {
@@ -52,8 +52,14 @@ class ReadOnlyGateTests(unittest.TestCase):
             fake_gh = root / "gh"
             fake_gh.write_text(
                 "#!/usr/bin/env python3\n"
-                "import os, sys\n"
-                "sys.stdout.write(os.environ['MOCK_GH_RESPONSE'])\n",
+                "import json, os, sys\n"
+                "url = sys.argv[-1]\n"
+                "if '/actions/runs/' in url and '/jobs?' in url:\n"
+                "    run_id = url.split('/actions/runs/')[1].split('/')[0]\n"
+                "    jobs = json.loads(os.environ['MOCK_JOBS_BY_RUN']).get(run_id, [])\n"
+                "    sys.stdout.write(json.dumps({'jobs': jobs}))\n"
+                "else:\n"
+                "    sys.stdout.write(os.environ['MOCK_GH_RESPONSE'])\n",
                 encoding="utf-8",
             )
             fake_gh.chmod(0o700)
@@ -65,6 +71,7 @@ class ReadOnlyGateTests(unittest.TestCase):
                 "GITHUB_OUTPUT": str(root / "outputs"),
                 "GITHUB_STEP_SUMMARY": str(root / "summary"),
                 "MOCK_GH_RESPONSE": json.dumps({"workflow_runs": runs or []}),
+                "MOCK_JOBS_BY_RUN": json.dumps(jobs_by_run or {}),
             })
             p = subprocess.run(
                 [sys.executable, "-c", guard_source()],
@@ -114,7 +121,75 @@ class ReadOnlyGateTests(unittest.TestCase):
             "conclusion": "failure",
             "created_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
         }
-        p, out = self.run_gate(minutes_old=45, runs=[failed])
+        p, out = self.run_gate(minutes_old=45, runs=[failed], jobs_by_run={
+            "102": [{"name": "checkpoint", "steps": [
+                {"name": "Scan in five bounded pages and durably checkpoint each page",
+                 "status": "completed", "conclusion": "failure"}]}],
+        })
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("scan=true", out)
+
+    def test_cancelled_pre_job_does_not_poison_checkpoint(self):
+        cancelled = {"id": 103, "status": "completed", "conclusion": "cancelled",
+                     "created_at": datetime.now(timezone.utc).isoformat()}
+        p, out = self.run_gate(minutes_old=50, runs=[cancelled],
+                               jobs_by_run={"103": []})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("scan=true", out)
+
+    def test_failed_guard_with_skipped_scan_is_safe_to_retry(self):
+        failed = {"id": 104, "status": "completed", "conclusion": "failure",
+                  "created_at": datetime.now(timezone.utc).isoformat()}
+        p, out = self.run_gate(minutes_old=50, runs=[failed], jobs_by_run={
+            "104": [{"name": "checkpoint", "steps": [
+                {"name": "Stop after completion or during Telegram cooldown",
+                 "status": "completed", "conclusion": "success"},
+                {"name": "Guard inventory against recent progress and concurrent runs",
+                 "status": "completed", "conclusion": "failure"},
+                {"name": "Scan in five bounded pages and durably checkpoint each page",
+                 "status": "completed", "conclusion": "skipped"}]}],
+        })
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("scan=true", out)
+
+    def test_cancellation_during_scan_stays_blocked(self):
+        cancelled = {"id": 105, "status": "completed", "conclusion": "cancelled",
+                     "created_at": datetime.now(timezone.utc).isoformat()}
+        p, out = self.run_gate(minutes_old=45, runs=[cancelled], jobs_by_run={
+            "105": [{"name": "checkpoint", "steps": [
+                {"name": "Scan in five bounded pages and durably checkpoint each page",
+                 "status": "completed", "conclusion": "cancelled"}]}],
+        })
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("scan=true", out)
+
+    def test_failed_run_without_jobs_is_ambiguous_and_blocks(self):
+        failed = {"id": 106, "status": "completed", "conclusion": "failure",
+                  "created_at": datetime.now(timezone.utc).isoformat()}
+        p, out = self.run_gate(minutes_old=45, runs=[failed],
+                               jobs_by_run={"106": []})
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("scan=true", out)
+
+    def test_cancelled_after_successful_scan_uses_private_checkpoint(self):
+        cancelled = {"id": 107, "status": "completed", "conclusion": "cancelled",
+                     "created_at": datetime.now(timezone.utc).isoformat()}
+        p, out = self.run_gate(minutes_old=45, runs=[cancelled], jobs_by_run={
+            "107": [{"name": "checkpoint", "steps": [
+                {"name": "Scan in five bounded pages and durably checkpoint each page",
+                 "status": "completed", "conclusion": "success"}]}],
+        })
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("scan=true", out)
+
+    def test_unknown_scan_state_fails_closed(self):
+        bad = {"id": 108, "status": "completed", "conclusion": "timed_out",
+               "created_at": datetime.now(timezone.utc).isoformat()}
+        p, out = self.run_gate(minutes_old=45, runs=[bad], jobs_by_run={
+            "108": [{"name": "checkpoint", "steps": [
+                {"name": "Scan in five bounded pages and durably checkpoint each page",
+                 "status": "completed", "conclusion": None}]}],
+        })
         self.assertNotEqual(p.returncode, 0)
         self.assertNotIn("scan=true", out)
 
