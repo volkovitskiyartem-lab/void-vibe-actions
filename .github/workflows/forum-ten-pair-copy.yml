@@ -14,12 +14,8 @@ permissions:
   contents: read
   actions: write  # Only for safely chaining the NEXT one-pair job after receipt proof.
 
-# Serialize all public music transfer actions and the pilot. Never preempt a
-# queued publishing job; the MUSIC_TRANSFER_PAUSED guard is also required.
-concurrency:
-  group: void-vibe-music-transfer
-  cancel-in-progress: false
-
+# Serialize the privileged pilot only; PR/static checks don't need to
+# occupy the production music-transfer concurrency group.
 jobs:
   offline_runner_review:
     if: github.event_name == 'pull_request'
@@ -57,6 +53,9 @@ jobs:
           PY
 
   copy_one_verified_pair:
+    concurrency:
+      group: void-vibe-music-transfer
+      cancel-in-progress: false
     if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
