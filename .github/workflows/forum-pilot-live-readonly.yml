@@ -1,0 +1,88 @@
+name: VOID VIBE ten-pair LIVE read-only preflight (NO SEND)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/forum-pilot-live-readonly.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/forum-pilot-live-readonly.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# This must not overlap with transfer/publishing in the public runner.
+concurrency:
+  group: void-vibe-music-transfer
+  cancel-in-progress: false
+
+jobs:
+  pr_no_secrets_review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify that PR cannot execute privileged code or send media
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/forum-pilot-live-readonly.yml').read_text()
+          assert "github.event_name != 'pull_request'" in text
+          assert "group: void-vibe-music-transfer" in text
+          assert "ref: f5b087d529af0d4d625ca158b734a7bf48b90854" in text
+          assert "state/telegram-forum-inventory" in text
+          assert "telegram_pilot_preflight.py" in text
+          assert ("flood_sleep_" + "threshold") not in text
+          assert ("telegram_safe_migration.py" + " apply") not in text
+          assert ("telegram_migration" + ".sqlite3") not in text
+          print('READ_ONLY_PILOT_RUNNER_STATIC_CHECK=PASS')
+          PY
+
+  verify_ten_live_pairs:
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable reviewed PRIVATE verification code
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: f5b087d529af0d4d625ca158b734a7bf48b90854
+          path: app
+          persist-credentials: false
+      - name: Checkout private completed full inventory and pilot digest
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: state/telegram-forum-inventory
+          path: audit-state
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned PRIVATE source dependencies
+        working-directory: app
+        run: python -m pip install -r requirements.txt
+      - name: Verify EXACT 10 original audio/cover pairs and real destination topics
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
+        run: python telegram_pilot_preflight.py --private-audit-dir ../audit-state/data/forum-audit
+      - name: Require migration prohibition unchanged (no Telegram write)
+        working-directory: app
+        run: |
+          python - <<'PY'
+          from forum_topic_policy import load_policy
+          assert load_policy()['migration_prohibited'] is True
+          print('PILOT_READ_ONLY=true; TELEGRAM_SENT=0; DELETED=0')
+          PY
