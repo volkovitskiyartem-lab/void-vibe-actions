@@ -1,0 +1,136 @@
+name: VOID VIBE approved ten-pair copy-only pilot (NO DELETIONS)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/forum-ten-pair-copy.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/forum-ten-pair-copy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write  # Only for safely chaining the NEXT one-pair job after receipt proof.
+
+# Serialize all public music transfer actions and the pilot. Never preempt a
+# queued publishing job; the MUSIC_TRANSFER_PAUSED guard is also required.
+concurrency:
+  group: void-vibe-music-transfer
+  cancel-in-progress: false
+
+jobs:
+  offline_runner_review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Assert pilot cannot receive secrets in PR and is always limited
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('.github/workflows/forum-ten-pair-copy.yml').read_text()
+          checks = (
+              "github.event_name != 'pull_request'",
+              "github.ref == 'refs/heads/main'",
+              "vars.MUSIC_TRANSFER_PAUSED == 'true'",
+              "group: void-vibe-music-transfer",
+              "cancel-in-progress: false",
+              "ref: f02832785978e3633f4ab8d179e19a29fad1519d",
+              "ref: state/telegram-forum-inventory",
+              "ref: router-state",
+              "telegram_pilot_apply.py",
+              "FORUM_PILOT_COMPLETE=false",
+              "FORUM_PILOT_SENT_THIS_RUN=1",
+          )
+          assert all(c in s for c in checks)
+          assert "TELEGRAM_SENT" not in s or "NO DELETIONS" in s
+          assert "telegram_safe_migration.py apply" not in s
+          assert "git push --force" not in s
+          print('PILOT_RUNNER_STATIC_GATES=PASS')
+          PY
+
+  copy_one_verified_pair:
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout reviewed PRIVATE pilot engine at immutable SHA
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: f02832785978e3633f4ab8d179e19a29fad1519d
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+      - name: Checkout completed PRIVATE audit and exact pilot digest
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: state/telegram-forum-inventory
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: audit-state
+          persist-credentials: false
+      - name: Checkout durable PRIVATE transfer receipts branch
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: router-state
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: progress
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned PRIVATE audio/Telegram reader dependencies
+        working-directory: app
+        run: python -m pip install -r requirements.txt
+      - name: Configure PRIVATE Git authentication for durable receipt pushes
+        working-directory: progress
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git config user.name 'void-vibe-pilot'
+          git config user.email 'void-vibe-pilot@users.noreply.github.com'
+      - name: Copy and re-read AT MOST ONE approved audio+cover pair
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          MUSIC_TRANSFER_PAUSED: ${{ vars.MUSIC_TRANSFER_PAUSED }}
+          ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
+        run: |
+          set -euo pipefail
+          python telegram_pilot_apply.py \
+            --private-app . \
+            --audit-root ../audit-state/data/forum-audit \
+            --state-root ../progress \
+            --local-journal "${RUNNER_TEMP}/void-vibe-pilot.sqlite3" \
+            | tee "${RUNNER_TEMP}/forum-pilot-result.txt"
+      - name: Continue only after durable receipt and successful verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/forum-pilot-result.txt"
+          if grep -qx 'FORUM_PILOT_COMPLETE=true' "$report"; then
+            echo 'PILOT_ALL_TEN_VERIFIED=true'
+            exit 0
+          fi
+          if grep -qx 'FORUM_PILOT_SENT_THIS_RUN=1' "$report" &&
+             grep -qx 'FORUM_PILOT_COMPLETE=false' "$report"; then
+            gh workflow run forum-ten-pair-copy.yml --repo volkovitskiyartem-lab/void-vibe-actions --ref main
+            echo 'PILOT_NEXT_BOUNDED_JOB_DISPATCHED=true'
+          else
+            echo 'Pilot made no new verified copy; refusing an automatic retry'
+            exit 1
+          fi
