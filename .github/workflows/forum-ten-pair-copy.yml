@@ -47,8 +47,8 @@ jobs:
           )
           assert all(c in s for c in checks)
           assert "TELEGRAM_SENT" not in s or "NO DELETIONS" in s
-          assert "telegram_safe_migration.py apply" not in s
-          assert "git push --force" not in s
+          assert ("telegram_safe_migration.py" + " apply") not in s
+          assert ("git push " + "--force") not in s
           print('PILOT_RUNNER_STATIC_GATES=PASS')
           PY
 
