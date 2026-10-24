@@ -37,9 +37,9 @@ jobs:
           assert "ref: f5b087d529af0d4d625ca158b734a7bf48b90854" in text
           assert "state/telegram-forum-inventory" in text
           assert "telegram_pilot_preflight.py" in text
-          assert "flood_sleep_threshold" not in text
-          assert "telegram_safe_migration.py apply" not in text
-          assert "telegram_migration.sqlite3" not in text
+          assert ("flood_sleep_" + "threshold") not in text
+          assert ("telegram_safe_migration.py" + " apply") not in text
+          assert ("telegram_migration" + ".sqlite3") not in text
           print('READ_ONLY_PILOT_RUNNER_STATIC_CHECK=PASS')
           PY
 
