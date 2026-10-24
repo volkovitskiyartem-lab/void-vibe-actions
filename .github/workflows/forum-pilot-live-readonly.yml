@@ -34,7 +34,7 @@ jobs:
           text = Path('.github/workflows/forum-pilot-live-readonly.yml').read_text()
           assert "github.event_name != 'pull_request'" in text
           assert "group: void-vibe-music-transfer" in text
-          assert "ref: f5b087d529af0d4d625ca158b734a7bf48b90854" in text
+          assert "ref: eda273b7bc57030790e70e92c93abbfb0b3794be" in text
           assert "state/telegram-forum-inventory" in text
           assert "telegram_pilot_preflight.py" in text
           assert ("flood_sleep_" + "threshold") not in text
@@ -53,7 +53,7 @@ jobs:
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: f5b087d529af0d4d625ca158b734a7bf48b90854
+          ref: eda273b7bc57030790e70e92c93abbfb0b3794be
           path: app
           persist-credentials: false
       - name: Checkout private completed full inventory and pilot digest
