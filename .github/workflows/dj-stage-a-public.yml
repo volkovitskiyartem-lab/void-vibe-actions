@@ -1,0 +1,240 @@
+name: DJ Brain Stage A — public runner, PRIVATE evidence
+
+# Manual only. Private code is pinned. No Telegram writes or public artifacts.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_private_read_only:
+        description: "Authorize one read-only Stage A analysis of private VOID VIBE music"
+        required: true
+        type: boolean
+        default: false
+      seed:
+        description: "Deterministic Stage A candidate seed"
+        required: true
+        type: string
+        default: "stage-a-20261023-v1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: void-vibe-dj-session
+  cancel-in-progress: false
+
+jobs:
+  stage-a-private-analysis:
+    if: >-
+      github.repository == 'volkovitskiyartem-lab/void-vibe-actions' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_private_read_only == true &&
+      vars.ROUTER_PAUSED != 'true' &&
+      vars.DJ_SETS_PAUSED != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout immutable PRIVATE Stage A code
+        id: private_checkout
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: a23076c74ee06860d3b1f99693c0c2fd6e515122
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: app
+          persist-credentials: false
+
+      - name: Verify private access and dedicated DJ session
+        env:
+          DJ_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          TRANSFER_SESSION: ${{ secrets.TG_SESSION }}
+          DAILY_SESSION: ${{ secrets.TG_DAILY_SESSION }}
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          PRIVATE_ACCESS: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          keys = ('DJ_SESSION', 'TRANSFER_SESSION', 'DAILY_SESSION',
+                  'API_ID', 'API_HASH', 'PRIVATE_ACCESS')
+          missing = [key for key in keys if not os.environ.get(key)]
+          if missing:
+              raise SystemExit('Missing configured secret names: ' + ', '.join(missing))
+          if os.environ['DJ_SESSION'] in (os.environ['TRANSFER_SESSION'],
+                                          os.environ['DAILY_SESSION']):
+              raise SystemExit('DJ Telegram session must remain independent')
+          print('Private access and independent DJ session configured; values withheld')
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned Stage A dependencies
+        working-directory: app
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements-dj.txt
+          python -m pip install --only-binary=:all: \
+            'torch==2.7.1+cpu' 'torchaudio==2.7.1+cpu' \
+            --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --only-binary=:all: \
+            'beat-this==1.1.0' 'essentia==2.1b6.dev1389'
+          python -m pip install 'Telethon==1.45.0'
+          python -m pip check
+          python -m compileall -q djbrain_v1
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Fetch Beat This checkpoint and verify pinned identity
+        working-directory: app
+        env:
+          MODEL_PATH: ${{ runner.temp }}/stage-a-final0.ckpt
+        run: |
+          set -euo pipefail
+          umask 077
+          readarray -t checkpoint_config < <(python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('djbrain_v1/model_manifest.json').read_text())
+          assert data['schema'] == 1 and data['allow_runtime_download'] is False
+          entry = data['beat_this']
+          assert entry['model'] == 'final0' and entry['package_version'] == '1.1.0'
+          print(entry['checkpoint_sha256'])
+          print(entry['checkpoint_bytes'])
+          print(entry['official_weights_url'])
+          for url in entry.get('checkpoint_mirror_urls', []):
+              print(url)
+          PY
+          )
+          test "${#checkpoint_config[@]}" -ge 3
+          checkpoint_ready=false
+          for url in "${checkpoint_config[@]:2}"; do
+            rm -f "$MODEL_PATH"
+            if ! curl --fail --silent --show-error --location --proto '=https' \
+              --proto-redir '=https' --retry 2 --connect-timeout 25 --max-time 300 \
+              --output "$MODEL_PATH" "$url"; then
+              continue
+            fi
+            if [ "$(stat --format='%s' "$MODEL_PATH")" != "${checkpoint_config[1]}" ]; then
+              continue
+            fi
+            if printf '%s  %s\n' "${checkpoint_config[0]}" "$MODEL_PATH" | \
+              sha256sum --check --status; then
+              checkpoint_ready=true
+              break
+            fi
+          done
+          if [ "$checkpoint_ready" != true ]; then
+            rm -f "$MODEL_PATH"
+            echo '::error::All pinned Beat This checkpoint sources failed verification.'
+            exit 1
+          fi
+          python -m djbrain_rc39.checkpoint_probe \
+            --checkpoint "$MODEL_PATH" --sha256 "${checkpoint_config[0]}" --seconds 16
+          echo 'Pinned checkpoint verified; musical quality remains unverified.'
+
+      - name: Fetch and verify pinned BeatNetLite source and weights
+        working-directory: app
+        env:
+          SECONDARY_MODEL_DIR: ${{ runner.temp }}/beatnet-lite
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$SECONDARY_MODEL_DIR/models"
+          readarray -t model_config < <(python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('djbrain_v1/model_manifest.json').read_text())
+          assert data['schema'] == 1 and data['allow_runtime_download'] is False
+          entry = data['beatnet_lite']
+          assert entry['model'] == 1 and entry['beats_per_bar'] == [4]
+          assert entry['allow_runtime_download'] is False
+          for key in ('source_sha256', 'source_bytes', 'source_url',
+                      'weights_sha256', 'weights_bytes', 'weights_url'):
+              print(entry[key])
+          PY
+          )
+          test "${#model_config[@]}" -eq 6
+          curl --fail --silent --show-error --location --proto '=https' \
+            --proto-redir '=https' --retry 2 --connect-timeout 25 --max-time 120 \
+            --output "$SECONDARY_MODEL_DIR/BeatNetLite.py" "${model_config[2]}"
+          curl --fail --silent --show-error --location --proto '=https' \
+            --proto-redir '=https' --retry 2 --connect-timeout 25 --max-time 120 \
+            --output "$SECONDARY_MODEL_DIR/models/model_1_weights.pt" "${model_config[5]}"
+          test "$(stat --format='%s' "$SECONDARY_MODEL_DIR/BeatNetLite.py")" = \
+            "${model_config[1]}"
+          test "$(stat --format='%s' "$SECONDARY_MODEL_DIR/models/model_1_weights.pt")" = \
+            "${model_config[4]}"
+          printf '%s  %s\n' "${model_config[0]}" "$SECONDARY_MODEL_DIR/BeatNetLite.py" | \
+            sha256sum --check --status
+          printf '%s  %s\n' "${model_config[3]}" \
+            "$SECONDARY_MODEL_DIR/models/model_1_weights.pt" | sha256sum --check --status
+
+      - name: Analyze deterministic multi-profile Stage A catalog
+        id: analysis
+        continue-on-error: true
+        working-directory: app
+        env:
+          MODEL_PATH: ${{ runner.temp }}/stage-a-final0.ckpt
+          SECONDARY_MODEL_DIR: ${{ runner.temp }}/beatnet-lite
+          PRIVATE_REVIEW_DIR: ${{ runner.temp }}/dj-stage-a-private-review
+          STAGE_A_SEED: ${{ inputs.seed }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_DJ_SESSION: ${{ secrets.TG_DJ_SESSION }}
+          OPENBLAS_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+          TORCH_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$TG_API_ID" && test -n "$TG_API_HASH" && test -n "$TG_DJ_SESSION"
+          mkdir -p "$PRIVATE_REVIEW_DIR"
+          set +e
+          python -m djbrain_v1.stage_a \
+            --beat-this-checkpoint "$MODEL_PATH" \
+            --beatnet-dir "$SECONDARY_MODEL_DIR" \
+            --output-dir "$PRIVATE_REVIEW_DIR/evidence" \
+            --seed "$STAGE_A_SEED" \
+            --confirm-read-only \
+            > "$PRIVATE_REVIEW_DIR/STAGE_A_EXECUTION.log" 2>&1
+          analysis_status=$?
+          set -e
+          printf '%s\n' "$analysis_status" > "$PRIVATE_REVIEW_DIR/STAGE_A_EXIT_STATUS.txt"
+          echo 'Stage A attempt finished; private evidence pending private release.'
+          exit "$analysis_status"
+
+      - name: Save derived evidence only in PRIVATE draft release
+        id: private_release
+        if: always() && steps.private_checkout.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REVIEW_DIR: ${{ runner.temp }}/dj-stage-a-private-review
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$PRIVATE_REVIEW_DIR"
+          name="djbrain-stage-a-private-${GITHUB_RUN_ID}"
+          archive="${RUNNER_TEMP}/${name}.tar.gz"
+          tar -czf "$archive" -C "$PRIVATE_REVIEW_DIR" .
+          gh release create "$name" "$archive" \
+            --repo volkovitskiyartem-lab/void-vibe-router \
+            --draft \
+            --title "PRIVATE Stage A evidence ${GITHUB_RUN_ID}" \
+            --notes "Read-only Stage A evidence from pinned private code. No Telegram publication. No source audio. Human listening remains required." \
+            >/dev/null
+          echo 'Derived evidence saved in PRIVATE draft release; no public artifact created.'
+
+      - name: Preserve truthful workflow status
+        if: always()
+        env:
+          ANALYSIS_OUTCOME: ${{ steps.analysis.outcome }}
+          RELEASE_OUTCOME: ${{ steps.private_release.outcome }}
+        run: |
+          if [ "$ANALYSIS_OUTCOME" != 'success' ] || [ "$RELEASE_OUTCOME" != 'success' ]; then
+            echo 'Stage A did not produce a strict accepted result; inspect the PRIVATE draft release.'
+            exit 1
+          fi
+          echo 'Stage A strict technical candidate found; musical quality remains unverified.'
