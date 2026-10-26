@@ -1,0 +1,108 @@
+name: VOID VIBE incremental forum refresh (read only)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '42 */6 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: void-vibe-forum-incremental-refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: 3764296a121ba052625d672478fe924ae3fbc350
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: state/telegram-forum-inventory
+          path: audit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and test checkpoint reader
+        working-directory: app
+        run: |
+          python -m pip install -r requirements.txt
+          python -m unittest -v test_telegram_forum_checkpoint
+      - name: Incrementally read at most 1500 new forum messages
+        id: scan
+        working-directory: app
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../audit/data/forum-refresh
+          if ! test -f ../audit/data/forum-refresh/checkpoint.json; then
+            cp ../audit/data/forum-audit/checkpoint.json ../audit/data/forum-refresh/checkpoint.json
+          fi
+          # Preserve the exact immutable pilot baseline in data/forum-audit.
+          for page in 1 2 3 4 5; do
+            next="../audit/data/forum-refresh/next.json"
+            if ! python telegram_forum_checkpoint.py --refresh --limit 300 \
+                --input ../audit/data/forum-refresh/checkpoint.json --output "$next" \
+                > "$RUNNER_TEMP/forum-refresh-private.log" 2>&1; then
+              echo 'Forum refresh blocked; private checkpoint preserved; no sends.'
+              exit 1
+            fi
+            mv "$next" ../audit/data/forum-refresh/checkpoint.json
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          from telegram_forum_checkpoint import private_summary
+          root = Path('../audit/data/forum-refresh')
+          state = json.loads((root / 'checkpoint.json').read_text())
+          summary = private_summary(state)
+          (root / 'status.json').write_text(json.dumps(summary))
+          print('FORUM_REFRESH=' + json.dumps(summary, sort_keys=True))
+          PY
+            if python - <<'PY'
+          import json
+          from pathlib import Path
+          s = json.loads(Path('../audit/data/forum-refresh/checkpoint.json').read_text())
+          raise SystemExit(0 if s['complete'] or s.get('error') or s.get('blocked_until') else 1)
+          PY
+            then break; fi
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from forum_topic_policy import load_policy
+          from telegram_forum_checkpoint import complete_snapshot
+          from telegram_safe_migration import plan
+          root = Path('../audit/data/forum-refresh')
+          state = json.loads((root / 'checkpoint.json').read_text())
+          if state['complete'] and not state.get('error'):
+              proposal = plan(complete_snapshot(state), load_policy())
+              (root / 'proposed-plan.json').write_text(json.dumps(proposal, ensure_ascii=False))
+              print('FORUM_REFRESH_PLAN_PREPARED=true')
+          elif state.get('error'):
+              raise SystemExit('Read-only refresh stopped; retain checkpoint and respect cooldown.')
+          PY
+      - name: Persist only to private inventory branch, including partial progress
+        if: always() && steps.scan.outcome != '' && steps.scan.outcome != 'skipped'
+        working-directory: audit
+        run: |
+          set -euo pipefail
+          git config user.name 'music-router'
+          git config user.email 'music-router@users.noreply.github.com'
+          git add -- data/forum-refresh
+          if ! git diff --cached --quiet; then
+            git commit -m 'Save incremental read-only forum checkpoint'
+            git push origin HEAD:state/telegram-forum-inventory
+          fi
