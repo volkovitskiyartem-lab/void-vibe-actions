@@ -53,6 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
+      FORUM_COMPACT_ROUTING: 'true'
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
       EVENT_NAME: ${{ github.event_name }}
       RUN_MODE: ${{ inputs.mode || (github.event_name == 'push' && 'collect') || (github.event_name == 'schedule' && github.event.schedule == '17,37,53 7 * * *' && 'collect') || (github.event_name == 'schedule' && 'publish') || 'verify' }}
@@ -148,6 +149,7 @@ jobs:
         if: steps.gate.outputs.due == 'true'
         working-directory: app
         env:
+          FORUM_COMPACT_ROUTING: 'false'
           ROUTER_STATE_DIR: ${{ runner.temp }}/void-vibe-tests
         run: |
           python -m pip install -r requirements.txt
