@@ -11,57 +11,63 @@ concurrency:
   cancel-in-progress: false
 jobs:
   audit:
-    if: github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true'
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 15
     env:
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
-      ROUTER_AUDIT_OUTPUT: ${{ github.workspace }}/audit/reports/source_coverage.json
+      ROUTER_AUDIT_OUTPUT: ${{ runner.temp }}/source_incremental_coverage.json
     steps:
-      - name: Checkout private source code (no state mutations)
+      - name: Checkout reviewed private bounded reader
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: main
+          ref: 44ea45407f11a43b9c20194c01b00b49eefa093a
+          persist-credentials: false
           path: app
-      - name: Open private router-state as a read-only worktree
+      - name: Open existing state read-only and private report branch
         working-directory: app
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           set -euo pipefail
+          gh auth setup-git
           git config user.name 'music-router'
           git config user.email 'music-router@users.noreply.github.com'
-          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          git fetch --depth=1 origin refs/heads/router-state:refs/remotes/origin/router-state refs/heads/coverage-reports:refs/remotes/origin/coverage-reports
           git worktree add ../progress --detach origin/router-state
-          if git show-ref --verify --quiet refs/remotes/origin/coverage-reports; then
-            git worktree add ../audit -B coverage-reports origin/coverage-reports
-          else
-            git worktree add --detach ../audit
-            cd ../audit
-            git checkout --orphan coverage-reports
-            git rm -rf .
-            mkdir -p reports
-          fi
+          git worktree add ../audit -B coverage-reports origin/coverage-reports
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install read-only Telegram client dependencies
+      - name: Install pinned reader dependencies
         working-directory: app
         run: python -m pip install -r requirements.txt
-      - name: Compare source audio to private durable receipts
+      - name: Read all three live source boundaries and bounded overlap
+        id: source_audit
         working-directory: app
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
-        run: python source_coverage_audit.py
-      - name: Persist audit report to dedicated private branch
+        run: python source_incremental_audit.py
+      - name: Preserve complete or blocked report privately
+        if: always() && steps.source_audit.outcome != '' && steps.source_audit.outcome != 'skipped'
         working-directory: audit
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          git add reports/source_coverage.json
+          test -s "$ROUTER_AUDIT_OUTPUT"
+          mkdir -p reports
+          cp "$ROUTER_AUDIT_OUTPUT" reports/source_incremental_coverage.json
+          git add reports/source_incremental_coverage.json
           if ! git diff --cached --quiet; then
-            git commit -m 'Save source coverage audit'
+            git commit -m 'Save bounded three-source read-only evidence'
             git push origin HEAD:coverage-reports
           fi
-          echo 'Detailed report saved privately; no Telegram messages were sent.'
+          echo 'SOURCE_AUDIT_PRIVATE_REPORT_SAVED=true'
