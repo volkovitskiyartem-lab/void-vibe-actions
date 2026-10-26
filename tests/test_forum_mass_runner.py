@@ -40,9 +40,19 @@ class MassRunnerBoundaryTests(unittest.TestCase):
         preview = next(s for s in self.job['steps'] if 'without Telegram' in s.get('name',''))
         self.assertNotIn('TG_SESSION',str(preview))
         apply = next(s for s in self.job['steps'] if s.get('name','').startswith('Apply bounded'))
-        self.assertEqual(apply['if'],"env.RUN_MODE == 'apply'")
+        self.assertEqual(apply['if'],"env.RUN_MODE == 'apply' || env.RUN_MODE == 'reconcile_holds'")
         self.assertEqual(apply['env']['GH_TOKEN'],'${{ secrets.PRIVATE_REPO_TOKEN }}')
         self.assertIn('--approved-plan 58753025f57470190130a1469b4038d0fa77a78642788725e1edcc3633242149',apply['run'])
+
+    def test_hold_recheck_is_manual_digest_bound_and_shell_input_is_only_environment(self):
+        inputs=self.doc['on']['workflow_dispatch']['inputs']
+        self.assertIn('reconcile_holds',inputs['mode']['options'])
+        self.assertIn('hold_digest',inputs)
+        apply=next(s for s in self.job['steps'] if s.get('name','').startswith('Apply bounded'))
+        self.assertEqual(apply['env']['APPROVED_HOLDS'],'${{ inputs.hold_digest }}')
+        self.assertIn('--approved-holds "$APPROVED_HOLDS"',apply['run'])
+        self.assertNotIn('${{ inputs.hold_digest }}',apply['run'])
+        self.assertIn('"$RUN_MODE"',apply['run'])
 
     def test_shared_job_lock_and_hourly_entry_cannot_dispatch_unbounded_chains(self):
         self.assertEqual(self.job['concurrency']['group'],'music-router')
