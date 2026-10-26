@@ -1,0 +1,114 @@
+name: VOID VIBE exact copy-only forum consolidation
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview offline; apply only with separately enabled exact private grant
+        type: choice
+        options: [preview, apply]
+        default: preview
+        required: true
+  schedule:
+    - cron: '9 * * * *'
+  pull_request:
+    paths:
+      - '.github/workflows/forum-mass-copy.yml'
+      - 'tests/test_forum_mass_runner.py'
+permissions:
+  contents: read
+concurrency:
+  group: void-vibe-forum-mass-runner
+  cancel-in-progress: false
+jobs:
+  offline_review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.3
+      - run: python -m unittest discover -s tests -q
+  bounded_copy:
+    concurrency:
+      group: music-router
+      cancel-in-progress: false
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || vars.FORUM_MASS_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FORUM_COMPACT_ROUTING: 'true'
+      ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
+      RUN_MODE: ${{ inputs.mode || 'apply' }}
+    steps:
+      - name: Checkout reviewed immutable PRIVATE mass engine
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: 86fe02fa1776a420f8a8bd0cafef0cc7679c63ee
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          persist-credentials: false
+          path: app
+      - name: Checkout immutable PRIVATE approved inventory candidate
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: 16cfb275343e0d0ac4e80c1265d0502971ac3e82
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          persist-credentials: false
+          path: inventory
+      - name: Checkout existing PRIVATE transfer state
+        uses: actions/checkout@v4
+        with:
+          repository: volkovitskiyartem-lab/void-vibe-router
+          ref: router-state
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          persist-credentials: false
+          path: progress
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned private dependencies
+        working-directory: app
+        run: python -m pip install -r requirements.txt
+      - name: Preview exact scope without Telegram credentials or state writes
+        if: env.RUN_MODE == 'preview'
+        working-directory: app
+        run: |
+          python telegram_forum_mass_runner.py preview \
+            --plan ../inventory/data/forum-refresh/proposed-plan.json \
+            --state-root ../progress \
+            --pilot-receipts ../progress/data/forum-pilot-receipts.json
+      - name: Configure private durable state authentication
+        if: env.RUN_MODE == 'apply'
+        working-directory: progress
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git config user.name 'void-vibe-forum-mass'
+          git config user.email 'void-vibe-forum-mass@users.noreply.github.com'
+      - name: Apply bounded verified pairs with private receipt pushes
+        if: env.RUN_MODE == 'apply'
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          FORUM_MASS_SERIALIZED: 'true'
+          ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
+          MUSIC_TRANSFER_PAUSED: ${{ vars.MUSIC_TRANSFER_PAUSED }}
+        run: |
+          python telegram_forum_mass_runner.py apply \
+            --plan ../inventory/data/forum-refresh/proposed-plan.json \
+            --state-root ../progress \
+            --pilot-receipts ../progress/data/forum-pilot-receipts.json \
+            --approved-plan 58753025f57470190130a1469b4038d0fa77a78642788725e1edcc3633242149
+      # No immediate self-dispatch: hourly bounded entry resumes durable state,
+      # respects protected normal-music windows and never bypasses a daily quota.
