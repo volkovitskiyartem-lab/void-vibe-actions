@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 15
     env:
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
-      ROUTER_AUDIT_OUTPUT: ${{ runner.temp }}/source_incremental_coverage.json
+      ROUTER_AUDIT_OUTPUT: ${{ github.workspace }}/source_incremental_coverage.json
     steps:
       - name: Checkout reviewed private bounded reader
         uses: actions/checkout@v4
