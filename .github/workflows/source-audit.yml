@@ -26,7 +26,7 @@ jobs:
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: 44ea45407f11a43b9c20194c01b00b49eefa093a
+          ref: 86fe02fa1776a420f8a8bd0cafef0cc7679c63ee
           persist-credentials: false
           path: app
       - name: Open existing state read-only and private report branch
