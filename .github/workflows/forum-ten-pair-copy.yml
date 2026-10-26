@@ -102,6 +102,7 @@ jobs:
       - name: Copy and re-read AT MOST ONE approved audio+cover pair
         working-directory: app
         env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
