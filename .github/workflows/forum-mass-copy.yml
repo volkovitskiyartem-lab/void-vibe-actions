@@ -14,7 +14,7 @@ on:
         required: false
         default: ''
   schedule:
-    - cron: '9 * * * *'
+    - cron: '9,24,39,54 * * * *'
   pull_request:
     paths:
       - '.github/workflows/forum-mass-copy.yml'
@@ -117,5 +117,5 @@ jobs:
             --pilot-receipts ../progress/data/forum-pilot-receipts.json \
             --approved-plan 58753025f57470190130a1469b4038d0fa77a78642788725e1edcc3633242149 \
             --approved-holds "$APPROVED_HOLDS"
-      # No immediate self-dispatch: hourly bounded entry resumes durable state,
+      # No immediate self-dispatch: 15-minute bounded entry resumes durable state,
       # respects protected normal-music windows and never bypasses a daily quota.
