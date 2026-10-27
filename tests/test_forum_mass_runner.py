@@ -54,10 +54,24 @@ class MassRunnerBoundaryTests(unittest.TestCase):
         self.assertNotIn('${{ inputs.hold_digest }}',apply['run'])
         self.assertIn('"$RUN_MODE"',apply['run'])
 
+    def test_timed_admission_runs_before_shared_lock_without_telegram_credentials(self):
+        admission=self.doc['jobs']['admission']
+        self.assertEqual(self.job['needs'],'admission')
+        self.assertIn("needs.admission.outputs.due == 'true'",self.job['if'])
+        self.assertNotIn('concurrency',admission)
+        self.assertIn("github.event_name != 'pull_request'",admission['if'])
+        self.assertIn("github.ref == 'refs/heads/main'",admission['if'])
+        self.assertNotIn('TG_SESSION',str(admission))
+        checkout=next(s for s in admission['steps'] if s.get('uses')=='actions/checkout@v4')
+        self.assertRegex(checkout['with']['ref'],r'^[0-9a-f]{40}$')
+        self.assertEqual(checkout['with']['ref'],self.job['steps'][0]['with']['ref'])
+        self.assertEqual(checkout['with']['persist-credentials'],'false')
+        self.assertTrue(any('python forum_transfer_priority.py' in s.get('run','') for s in admission['steps']))
+
     def test_shared_job_lock_and_frequent_entry_cannot_dispatch_unbounded_chains(self):
         self.assertEqual(self.job['concurrency']['group'],'music-router')
         self.assertEqual(self.job['concurrency']['cancel-in-progress'],'false')
-        self.assertEqual(self.doc['on']['schedule'],[{'cron':'9,24,39,54 0-5,9-10,13-14,17-23 * * *'}])
+        self.assertEqual(self.doc['on']['schedule'],[{'cron':'9,24,39,54 * * * *'}])
         self.assertNotIn('gh workflow run',self.path.read_text())
 
 
