@@ -14,7 +14,7 @@ on:
         required: false
         default: ''
   schedule:
-    - cron: '9 * * * *'
+    - cron: '9,24,39,54 0-5,9-10,13-14,17-23 * * *'
   pull_request:
     paths:
       - '.github/workflows/forum-mass-copy.yml'
@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: 5fd5923cb83af17378876ce696ee9e79e0f00cca
+          ref: 3c72fe0724605273cbfe2450ef60b42e1fd5d6b1
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
           path: app
@@ -117,5 +117,5 @@ jobs:
             --pilot-receipts ../progress/data/forum-pilot-receipts.json \
             --approved-plan 58753025f57470190130a1469b4038d0fa77a78642788725e1edcc3633242149 \
             --approved-holds "$APPROVED_HOLDS"
-      # No immediate self-dispatch: hourly bounded entry resumes durable state,
+      # No immediate self-dispatch: 15-minute bounded entry outside protected normal-music hours resumes durable state,
       # respects protected normal-music windows and never bypasses a daily quota.

@@ -54,10 +54,10 @@ class MassRunnerBoundaryTests(unittest.TestCase):
         self.assertNotIn('${{ inputs.hold_digest }}',apply['run'])
         self.assertIn('"$RUN_MODE"',apply['run'])
 
-    def test_shared_job_lock_and_hourly_entry_cannot_dispatch_unbounded_chains(self):
+    def test_shared_job_lock_and_frequent_entry_cannot_dispatch_unbounded_chains(self):
         self.assertEqual(self.job['concurrency']['group'],'music-router')
         self.assertEqual(self.job['concurrency']['cancel-in-progress'],'false')
-        self.assertEqual(self.doc['on']['schedule'],[{'cron':'9 * * * *'}])
+        self.assertEqual(self.doc['on']['schedule'],[{'cron':'9,24,39,54 0-5,9-10,13-14,17-23 * * *'}])
         self.assertNotIn('gh workflow run',self.path.read_text())
 
 
