@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: 6836b4018de1fabe99906e8e0c9d27ac481129ac
+          ref: 879e9c295c703b7abd7612543a336f28be8914c2
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
           path: app
@@ -79,7 +79,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: 6836b4018de1fabe99906e8e0c9d27ac481129ac
+          ref: 879e9c295c703b7abd7612543a336f28be8914c2
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
           path: app
