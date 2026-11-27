@@ -74,6 +74,18 @@ class MassRunnerBoundaryTests(unittest.TestCase):
         self.assertEqual(self.doc['on']['schedule'],[{'cron':'9,24,39,54 * * * *'}])
         self.assertNotIn('gh workflow run',self.path.read_text())
 
+    def test_trial_is_manual_only_and_preserves_both_automatic_pauses(self):
+        self.assertIn('trial',self.doc['on']['workflow_dispatch']['inputs']['mode']['options'])
+        for name in ('admission','bounded_copy'):
+            guard=self.doc['jobs'][name]['if']
+            self.assertIn("github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false'",guard)
+            self.assertIn("inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true'",guard)
+            self.assertIn("vars.ROUTER_PAUSED != 'true'",guard)
+            self.assertEqual(self.doc['jobs'][name]['env']['RUN_MODE'],"${{ inputs.mode == 'trial' && 'apply' || inputs.mode || 'apply' }}")
+        apply=next(s for s in self.job['steps'] if s.get('name','').startswith('Apply bounded'))
+        self.assertEqual(apply['env']['FORUM_MASS_TRIAL'],"${{ inputs.mode == 'trial' && 'true' || 'false' }}")
+        self.assertEqual(apply['env']['FORUM_MASS_ENABLED'],"${{ vars.FORUM_MASS_ENABLED }}")
+        self.assertEqual(apply['env']['MUSIC_TRANSFER_PAUSED'],"${{ vars.MUSIC_TRANSFER_PAUSED }}")
 
 if __name__ == '__main__':
     unittest.main()
