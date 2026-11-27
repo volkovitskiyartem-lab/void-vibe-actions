@@ -8,6 +8,11 @@ on:
         options: [preview, apply, reconcile_holds, trial]
         default: preview
         required: true
+      chain_step:
+        description: Internal bounded continuation counter; leave at zero for a manual start
+        type: number
+        required: false
+        default: 0
       hold_digest:
         description: Exact private hold-set SHA256, required only for never-sent candidate recheck
         type: string
@@ -70,6 +75,8 @@ jobs:
     if: needs.admission.outputs.due == 'true' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false') || (inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')) || (vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'))))
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      continue_copy: ${{ steps.copy.outputs.continue_copy }}
     env:
       FORUM_COMPACT_ROUTING: 'true'
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
@@ -124,6 +131,7 @@ jobs:
           git config user.name 'void-vibe-forum-mass'
           git config user.email 'void-vibe-forum-mass@users.noreply.github.com'
       - name: Apply bounded verified pairs with private receipt pushes
+        id: copy
         if: env.RUN_MODE == 'apply' || env.RUN_MODE == 'reconcile_holds'
         working-directory: app
         env:
@@ -138,11 +146,56 @@ jobs:
           MUSIC_TRANSFER_PAUSED: ${{ vars.MUSIC_TRANSFER_PAUSED }}
           APPROVED_HOLDS: ${{ inputs.hold_digest }}
         run: |
+          set -euo pipefail
+          report=$(mktemp)
+          trap 'rm -f "$report"' EXIT
           python telegram_forum_mass_runner.py "$RUN_MODE" \
             --plan ../inventory/data/forum-refresh/proposed-plan.json \
             --state-root ../progress \
             --pilot-receipts ../progress/data/forum-pilot-receipts.json \
             --approved-plan 58753025f57470190130a1469b4038d0fa77a78642788725e1edcc3633242149 \
-            --approved-holds "$APPROVED_HOLDS"
-      # No immediate self-dispatch: 15-minute entry checks timed admission before the shared lock and resumes durable state,
-      # respects protected normal-music windows and never bypasses a daily quota.
+            --approved-holds "$APPROVED_HOLDS" | tee "$report"
+          python - "$report" <<'PYTHON'
+          import os, re, sys
+          values = {}
+          for line in open(sys.argv[1], encoding="utf-8"):
+              m = re.fullmatch(r"FORUM_MASS_([A-Z_]+)=([a-z0-9_]+)", line.strip())
+              if m:
+                  values[m[1]] = m[2]
+          def count(key):
+              value = values.get(key, "")
+              return int(value) if value.isdecimal() else -1
+          due = (os.environ["RUN_MODE"] == "apply"
+                 and os.environ["FORUM_MASS_TRIAL"] == "false"
+                 and count("SENT") > 0
+                 and count("PENDING_TOTAL") == 0
+                 and count("REMAINING") > 0
+                 and count("DAILY_REMAINING") > 0
+                 and values.get("DEFERRED") == "none")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"continue_copy={str(due).lower()}\n")
+          PYTHON
+  continue_copy:
+    # This job receives no Telegram or private-repository credentials.
+    # Only a completed durable checkpoint with positive progress can continue.
+    needs: bounded_copy
+    if: needs.bounded_copy.result == 'success' && needs.bounded_copy.outputs.continue_copy == 'true' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.FORUM_MASS_ENABLED == 'true' && vars.MUSIC_TRANSFER_PAUSED == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'))
+    permissions:
+      actions: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Queue one bounded continuation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN_STEP: ${{ inputs.chain_step || 0 }}
+        run: |
+          set -euo pipefail
+          [[ "$CHAIN_STEP" =~ ^(0|[1-9][0-9]?)$ ]] || exit 1
+          if (( CHAIN_STEP >= 24 )); then
+            echo "Bounded continuation limit reached; scheduled entry remains available"
+            exit 0
+          fi
+          gh workflow run forum-mass-copy.yml -R "$GITHUB_REPOSITORY" --ref main -f mode=apply -f chain_step="$((CHAIN_STEP+1))"
+    # Every continuation re-enters unchanged timed admission, shared lock,
+    # private journal validation and daily quota. Failures never chain.

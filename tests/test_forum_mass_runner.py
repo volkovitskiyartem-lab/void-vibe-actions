@@ -72,7 +72,23 @@ class MassRunnerBoundaryTests(unittest.TestCase):
         self.assertEqual(self.job['concurrency']['group'],'music-router')
         self.assertEqual(self.job['concurrency']['cancel-in-progress'],'false')
         self.assertEqual(self.doc['on']['schedule'],[{'cron':'9,24,39,54 * * * *'}])
-        self.assertNotIn('gh workflow run',self.path.read_text())
+        chain=self.doc['jobs']['continue_copy']
+        self.assertEqual(chain['needs'],'bounded_copy')
+        self.assertEqual(chain['permissions'],{'actions':'write'})
+        self.assertIn("needs.bounded_copy.result == 'success'",chain['if'])
+        self.assertIn("needs.bounded_copy.outputs.continue_copy == 'true'",chain['if'])
+        for gate in ("github.ref == 'refs/heads/main'", "vars.ROUTER_PAUSED != 'true'", "vars.FORUM_MASS_ENABLED == 'true'", "inputs.mode == 'apply'"):
+            self.assertIn(gate,chain['if'])
+        self.assertNotIn('secrets.',str(chain))
+        step=chain['steps'][0]
+        self.assertEqual(step['env']['GH_TOKEN'],'${{ github.token }}')
+        self.assertIn('CHAIN_STEP >= 24',step['run'])
+        self.assertIn('chain_step="$((CHAIN_STEP+1))"',step['run'])
+        self.assertEqual(self.doc['on']['workflow_dispatch']['inputs']['chain_step']['default'],'0')
+        apply=next(s for s in self.job['steps'] if s.get('id')=='copy')
+        for check in ('count("SENT") > 0','count("PENDING_TOTAL") == 0','count("REMAINING") > 0','count("DAILY_REMAINING") > 0','values.get("DEFERRED") == "none"'):
+            self.assertIn(check,apply['run'])
+        self.assertIn('set -euo pipefail',apply['run'])
 
     def test_trial_is_manual_only_and_preserves_both_automatic_pauses(self):
         self.assertIn('trial',self.doc['on']['workflow_dispatch']['inputs']['mode']['options'])
