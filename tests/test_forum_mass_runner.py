@@ -87,5 +87,11 @@ class MassRunnerBoundaryTests(unittest.TestCase):
         self.assertEqual(apply['env']['FORUM_MASS_ENABLED'],"${{ vars.FORUM_MASS_ENABLED }}")
         self.assertEqual(apply['env']['MUSIC_TRANSFER_PAUSED'],"${{ vars.MUSIC_TRANSFER_PAUSED }}")
 
+    def test_completion_stage_resumes_only_approved_mass_schedule(self):
+        for name in ('admission','bounded_copy'):
+            guard=self.doc['jobs'][name]['if']
+            self.assertIn("vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'))",guard)
+            self.assertIn("vars.ROUTER_PAUSED != 'true'",guard)
+
 if __name__ == '__main__':
     unittest.main()

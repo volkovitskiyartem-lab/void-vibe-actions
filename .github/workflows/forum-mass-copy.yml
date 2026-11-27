@@ -40,7 +40,7 @@ jobs:
       - run: python -m unittest discover -s tests -q
   admission:
     # Evaluate the finite priority lease BEFORE joining the shared transfer lock.
-    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false') || (inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')))
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false') || (inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')) || (vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'))))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: aca22cf31f3d0d78a0bf70ff71a660a05803643f
+          ref: 4015c8a5bbc31759ca79ade0b3e6fe614cbf02cf
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
           path: app
@@ -67,7 +67,7 @@ jobs:
     concurrency:
       group: music-router
       cancel-in-progress: false
-    if: needs.admission.outputs.due == 'true' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false') || (inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')))
+    if: needs.admission.outputs.due == 'true' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false') || (inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')) || (vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'))))
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -79,7 +79,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: aca22cf31f3d0d78a0bf70ff71a660a05803643f
+          ref: 4015c8a5bbc31759ca79ade0b3e6fe614cbf02cf
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
           path: app
