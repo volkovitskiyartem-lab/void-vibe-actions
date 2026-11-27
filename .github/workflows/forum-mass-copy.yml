@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Preview, copy approved pairs, or recheck never-sent holds without sending
+        description: Preview, copy approved pairs, recheck holds, or run the approved bounded manual trial
         type: choice
-        options: [preview, apply, reconcile_holds]
+        options: [preview, apply, reconcile_holds, trial]
         default: preview
         required: true
       hold_digest:
@@ -40,18 +40,18 @@ jobs:
       - run: python -m unittest discover -s tests -q
   admission:
     # Evaluate the finite priority lease BEFORE joining the shared transfer lock.
-    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')
+    if: github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false') || (inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       due: ${{ steps.window.outputs.due }}
     env:
-      RUN_MODE: ${{ inputs.mode || 'apply' }}
+      RUN_MODE: ${{ inputs.mode == 'trial' && 'apply' || inputs.mode || 'apply' }}
     steps:
       - uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: b38a7c4e65b1d5908c83de81a621850c0d2e51dc
+          ref: aca22cf31f3d0d78a0bf70ff71a660a05803643f
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
           path: app
@@ -67,19 +67,19 @@ jobs:
     concurrency:
       group: music-router
       cancel-in-progress: false
-    if: needs.admission.outputs.due == 'true' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')
+    if: needs.admission.outputs.due == 'true' && github.repository == 'volkovitskiyartem-lab/void-vibe-actions' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLIC_RUNNER_ENABLED == 'true' && vars.ROUTER_PAUSED != 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'trial' && vars.MUSIC_TRANSFER_PAUSED == 'true' && vars.FORUM_MASS_ENABLED == 'false') || (inputs.mode != 'trial' && vars.MUSIC_TRANSFER_PAUSED != 'true' && (inputs.mode == 'preview' || inputs.mode == 'reconcile_holds' || vars.FORUM_MASS_ENABLED == 'true')))
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
       FORUM_COMPACT_ROUTING: 'true'
       ROUTER_STATE_DIR: ${{ github.workspace }}/progress/data
-      RUN_MODE: ${{ inputs.mode || 'apply' }}
+      RUN_MODE: ${{ inputs.mode == 'trial' && 'apply' || inputs.mode || 'apply' }}
     steps:
       - name: Checkout reviewed immutable PRIVATE mass engine
         uses: actions/checkout@v4
         with:
           repository: volkovitskiyartem-lab/void-vibe-router
-          ref: b38a7c4e65b1d5908c83de81a621850c0d2e51dc
+          ref: aca22cf31f3d0d78a0bf70ff71a660a05803643f
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
           path: app
@@ -132,6 +132,8 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
           FORUM_MASS_SERIALIZED: 'true'
+          FORUM_MASS_TRIAL: ${{ inputs.mode == 'trial' && 'true' || 'false' }}
+          FORUM_MASS_ENABLED: ${{ vars.FORUM_MASS_ENABLED }}
           ROUTER_PAUSED: ${{ vars.ROUTER_PAUSED }}
           MUSIC_TRANSFER_PAUSED: ${{ vars.MUSIC_TRANSFER_PAUSED }}
           APPROVED_HOLDS: ${{ inputs.hold_digest }}
