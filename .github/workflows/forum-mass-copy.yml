@@ -27,7 +27,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: void-vibe-forum-mass-runner
+  group: ${{ github.event_name == 'pull_request' && format('void-vibe-forum-mass-review-{0}', github.event.pull_request.number) || 'void-vibe-forum-mass-runner' }}
   cancel-in-progress: false
 jobs:
   offline_review:
